@@ -126,13 +126,13 @@ static volatile int tls_in_safe = 0;
     UISwitch *_swAutoSellIngredient;
     UISegmentedControl *_segSellIngredientQuality;
     UISwitch *_swRecipeMerge;
-    UISwitch *_swRecipeMergeGoToFire;
     UIButton *_btnRecipeInput;
     UILabel  *_lblRecipeInfo;
     UISwitch *_swAutoMergeIngredient;
     UISegmentedControl *_segMergeIngredientQuality;
 
     // Settings page
+    UISwitch *_swMaster;
     UISwitch *_swZoom;
     UILabel  *_lblZoomValue;
     UISlider *_sliderZoom;
@@ -158,6 +158,7 @@ static volatile int tls_in_safe = 0;
     CAShapeLayer *_autoQuitRangeLayer;
 }
 - (void)setStatusText:(NSString *)text;
+- (void)updateMasterSwitchUI:(BOOL)on;
 - (void)updateESPLine;
 - (void)mainTabChanged:(UISegmentedControl *)sender;
 - (void)autoSubTabChanged:(UISegmentedControl *)sender;
@@ -174,7 +175,6 @@ static volatile int tls_in_safe = 0;
 - (void)showCustomMobIdInputDialogForMode:(BOOL)isAvoidMode;
 - (void)swAutoSellKeyChanged:(UISwitch *)sender;
 - (void)swRecipeMergeChanged:(UISwitch *)sender;
-- (void)swRecipeMergeGoToFireChanged:(UISwitch *)sender;
 - (void)btnRecipeInputPressed:(id)sender;
 - (void)btnClearRecipePressed:(id)sender;
 - (void)showRecipeInputDialog;
@@ -467,14 +467,13 @@ struct RecipeData {
     bool valid = false;
 };
 
-static bool        g_recipeMergeEnabled    = false;
-static bool        g_recipeMergeGoToFire   = true;
-static bool        g_isGoingToFire         = false;
-static bool        g_isAtFireForRecipe     = false;
-static Vector3     g_farmPosBeforeFire     = {0,0,0};
-static bool        g_hasFarmPosBeforeFire  = false;
-static bool        g_isReturningToFarm     = false;
-static NSString*   g_recipeBase64          = @"";
+static bool        g_recipeMergeEnabled        = false;
+static bool        g_isGoingToVillage          = false;
+static bool        g_isAtVillageForRecipe      = false;
+static Vector3     g_farmPosBeforeVillage      = {0,0,0};
+static bool        g_hasFarmPosBeforeVillage   = false;
+static bool        g_isReturningToFarm         = false;
+static NSString*   g_recipeBase64              = @"";
 static RecipeData  g_currentRecipe;
 
 struct RecipeMatcher {
@@ -787,27 +786,15 @@ static void* CreateIl2CppStringList(const std::vector<void*>& stringIds, void* p
     return listObj;
 }
 
-static bool GetClosestFireCraftPosition(Vector3 playerPos, Vector3* outClosestFire, float* outDist) {
-    if (!outClosestFire) return false;
+static bool GetClosestVillagePosition(Vector3 playerPos, Vector3* outClosestVillage, float* outDist) {
+    if (!outClosestVillage) return false;
 
+    // 1. Query MapManager.instance: OrcVillage (0x130) and WhiteVillage (0x138)
     static void* mapManagerKlass = nullptr;
     static void* mmInstanceField = nullptr;
-    static size_t fireCraftLocOffset = 0;
-    static bool offsetResolved = false;
-
     if (!mapManagerKlass) mapManagerKlass = ScanFindClass("", "MapManager");
-    if (mapManagerKlass) {
-        if (!mmInstanceField)
-            mmInstanceField = IL2CPP::il2cpp_class_get_field_from_name(mapManagerKlass, "instance");
-        if (!offsetResolved) {
-            void* field = IL2CPP::il2cpp_class_get_field_from_name(mapManagerKlass, "FireCraftLocation");
-            if (field && IL2CPP::il2cpp_field_get_offset) {
-                fireCraftLocOffset = IL2CPP::il2cpp_field_get_offset(field);
-            } else {
-                fireCraftLocOffset = 0x128; // Fallback from dump.cs
-            }
-            offsetResolved = true;
-        }
+    if (mapManagerKlass && !mmInstanceField) {
+        mmInstanceField = IL2CPP::il2cpp_class_get_field_from_name(mapManagerKlass, "instance");
     }
 
     void* mmInstance = nullptr;
@@ -816,37 +803,93 @@ static bool GetClosestFireCraftPosition(Vector3 playerPos, Vector3* outClosestFi
     }
 
     if (mmInstance && IsValidUnityObj(mmInstance)) {
-        void* fireCraftList = *(void**)((uint8_t*)mmInstance + fireCraftLocOffset);
-        if (fireCraftList) {
-            void* arr = *(void**)((uint8_t*)fireCraftList + 0x10);
-            int32_t size = *(int32_t*)((uint8_t*)fireCraftList + 0x18);
-            if (arr && size > 0) {
-                float bestDist = 999999.0f;
-                Vector3 bestPos = {0,0,0};
-                bool found = false;
+        float bestDist = 999999.0f;
+        Vector3 bestPos = {0,0,0};
+        bool found = false;
 
-                for (int i = 0; i < size; i++) {
-                    Vector3* pPos = (Vector3*)((uint8_t*)arr + 0x20 + i * sizeof(Vector3));
-                    float dx = pPos->x - playerPos.x;
-                    float dy = pPos->y - playerPos.y;
-                    float dist = sqrtf(dx * dx + dy * dy);
-                    if (dist < bestDist) {
-                        bestDist = dist;
-                        bestPos = *pPos;
-                        found = true;
+        size_t villageOffsets[2] = { 0x130, 0x138 }; // OrcVillage, WhiteVillage
+        for (int v = 0; v < 2; v++) {
+            void* villageList = *(void**)((uint8_t*)mmInstance + villageOffsets[v]);
+            if (villageList) {
+                void* arr = *(void**)((uint8_t*)villageList + 0x10);
+                int32_t size = *(int32_t*)((uint8_t*)villageList + 0x18);
+                if (arr && size > 0 && size < 500) {
+                    for (int i = 0; i < size; i++) {
+                        Vector3* pPos = (Vector3*)((uint8_t*)arr + 0x20 + i * sizeof(Vector3));
+                        float dx = pPos->x - playerPos.x;
+                        float dy = pPos->y - playerPos.y;
+                        float dist = sqrtf(dx * dx + dy * dy);
+                        if (dist < bestDist) {
+                            bestDist = dist;
+                            bestPos = *pPos;
+                            found = true;
+                        }
                     }
                 }
+            }
+        }
 
-                if (found) {
-                    *outClosestFire = bestPos;
-                    if (outDist) *outDist = bestDist;
-                    return true;
+        if (found) {
+            *outClosestVillage = bestPos;
+            if (outDist) *outDist = bestDist;
+            return true;
+        }
+    }
+
+    // 2. Query NavigationManager for Merge NPC (NpcType::Merge = 7)
+    static void* navManagerKlass = nullptr;
+    static void* navInstanceField = nullptr;
+    static void* goNPCMethod = nullptr;
+    static void* stopMethod = nullptr;
+    static bool navResolved = false;
+
+    if (!navResolved) {
+        navManagerKlass = ScanFindClass("", "NavigationManager");
+        if (navManagerKlass) {
+            navInstanceField = IL2CPP::il2cpp_class_get_field_from_name(navManagerKlass, "Instance");
+            goNPCMethod = FindMethodInHierarchy(navManagerKlass, "GoNPC", 2);
+            stopMethod = FindMethodInHierarchy(navManagerKlass, "Stop", 0);
+        }
+        navResolved = true;
+    }
+
+    if (navInstanceField && goNPCMethod && IL2CPP::il2cpp_field_static_get_value) {
+        void* navInstance = nullptr;
+        IL2CPP::il2cpp_field_static_get_value(navInstanceField, &navInstance);
+        if (navInstance && IsValidUnityObj(navInstance)) {
+            static double s_lastNpcQueryTime = 0;
+            static Vector3 s_cachedNpcPos = {0,0,0};
+            static bool s_hasCachedNpcPos = false;
+            double nowTime = [[NSProcessInfo processInfo] systemUptime];
+
+            if (!s_hasCachedNpcPos || (nowTime - s_lastNpcQueryTime > 5.0)) {
+                s_lastNpcQueryTime = nowTime;
+                int32_t npcType = 7; // NpcType::Merge
+                void* tokenStr = IL2CPP::il2cpp_string_new ? IL2CPP::il2cpp_string_new("") : nullptr;
+                void* params[2] = { &npcType, tokenStr };
+                SafeInvoke(goNPCMethod, navInstance, params);
+
+                Vector3 targetPos = *(Vector3*)((uint8_t*)navInstance + 0x20); // targetPosition
+                if (stopMethod) SafeInvoke(stopMethod, navInstance, nullptr);
+
+                if (fabsf(targetPos.x) > 0.01f || fabsf(targetPos.y) > 0.01f) {
+                    s_cachedNpcPos = targetPos;
+                    s_hasCachedNpcPos = true;
                 }
+            }
+
+            if (s_hasCachedNpcPos) {
+                float dx = s_cachedNpcPos.x - playerPos.x;
+                float dy = s_cachedNpcPos.y - playerPos.y;
+                float dist = sqrtf(dx * dx + dy * dy);
+                *outClosestVillage = s_cachedNpcPos;
+                if (outDist) *outDist = dist;
+                return true;
             }
         }
     }
 
-    // 2. Scan scene MapObject with MapType::FireCraft (mapType == 4)
+    // 3. Fallback: Scan scene MapObject with Village types
     static void* mapObjectKlass = nullptr;
     static void* compKlass = nullptr;
     static void* getTransformMI = nullptr;
@@ -871,7 +914,7 @@ static bool GetClosestFireCraftPosition(Vector3 playerPos, Vector3* outClosestFi
                 void* mapData = *(void**)((uint8_t*)mapObj + 0x20);
                 if (!mapData) continue;
                 int32_t mType = *(int32_t*)((uint8_t*)mapData + 0x18); // MapData.mapType
-                if (mType == 4) { // MapType::FireCraft
+                if (mType == 21 || mType == 22 || mType == 33 || mType == 45) { // Village Gate/Shop
                     void* trans = SafeInvoke(getTransformMI, mapObj, nullptr);
                     if (!trans) continue;
                     void* boxed = SafeInvoke(getPositionMI, trans, nullptr);
@@ -888,55 +931,10 @@ static bool GetClosestFireCraftPosition(Vector3 playerPos, Vector3* outClosestFi
                 }
             }
             if (found) {
-                *outClosestFire = bestPos;
+                *outClosestVillage = bestPos;
                 if (outDist) *outDist = bestDist;
                 return true;
             }
-        }
-    }
-
-    // 3. Fallback: NavigationManager (query at most once every 5 seconds to avoid spamming GoToFireCraft)
-    static double lastNavFetchTime = 0;
-    static Vector3 cachedNavTarget = {0,0,0};
-    static bool hasCachedNavTarget = false;
-    double nowNavTime = [[NSProcessInfo processInfo] systemUptime];
-
-    if (!hasCachedNavTarget || nowNavTime - lastNavFetchTime > 5.0) {
-        lastNavFetchTime = nowNavTime;
-        static void* navManagerKlass = nullptr;
-        static void* navInstanceField = nullptr;
-        if (!navManagerKlass) navManagerKlass = ScanFindClass("", "NavigationManager");
-        if (navManagerKlass && !navInstanceField)
-            navInstanceField = IL2CPP::il2cpp_class_get_field_from_name(navManagerKlass, "Instance");
-
-        void* navInstance = nullptr;
-        if (navInstanceField && IL2CPP::il2cpp_field_static_get_value) {
-            IL2CPP::il2cpp_field_static_get_value(navInstanceField, &navInstance);
-        }
-        if (navInstance && IsValidUnityObj(navInstance)) {
-            static void* goToFireCraftMI = nullptr;
-            if (!goToFireCraftMI) goToFireCraftMI = FindMethodInHierarchy(navManagerKlass, "GoToFireCraft", 1);
-            if (goToFireCraftMI) {
-                void* emptyStr = IL2CPP::il2cpp_string_new("");
-                void* params[1] = { emptyStr };
-                SafeInvoke(goToFireCraftMI, navInstance, params);
-                Vector3 navTarget = *(Vector3*)((uint8_t*)navInstance + 0x20);
-                if (fabsf(navTarget.x) > 0.01f || fabsf(navTarget.y) > 0.01f) {
-                    cachedNavTarget = navTarget;
-                    hasCachedNavTarget = true;
-                }
-            }
-        }
-    }
-
-    if (hasCachedNavTarget) {
-        float dx = cachedNavTarget.x - playerPos.x;
-        float dy = cachedNavTarget.y - playerPos.y;
-        float dist = sqrtf(dx * dx + dy * dy);
-        if (dist < 10000.0f) {
-            *outClosestFire = cachedNavTarget;
-            if (outDist) *outDist = dist;
-            return true;
         }
     }
 
@@ -954,9 +952,6 @@ static void LoadTweakPreferences() {
     }
     if ([defs objectForKey:@"THTweak_RecipeMerge"]) {
         g_recipeMergeEnabled = [defs boolForKey:@"THTweak_RecipeMerge"];
-    }
-    if ([defs objectForKey:@"THTweak_RecipeMergeGoToFire"]) {
-        g_recipeMergeGoToFire = [defs boolForKey:@"THTweak_RecipeMergeGoToFire"];
     }
     NSString *savedRec = [defs stringForKey:@"THTweak_RecipeBase64"];
     if (savedRec && [savedRec length] > 0) {
@@ -1505,6 +1500,89 @@ static void HardStopJoystick(void* playerMovement, Vector3 playerPos) {
     }
 }
 
+static void DisableAllAutoByPlayerMove() {
+    if (!g_menuMasterSwitch) return;
+    g_menuMasterSwitch = false;
+    g_hasCachedTarget = false;
+    g_currentTargetObj = nullptr;
+    g_isAtTarget = false;
+    g_isGoingToVillage = false;
+    g_isAtVillageForRecipe = false;
+    g_isReturningToFarm = false;
+    g_hasFarmPosBeforeVillage = false;
+
+    // Immediately stop any automated joystick/movement forces
+    void* pm = GetLocalPlayerMovement();
+    if (pm) {
+        Vector3 playerPos = g_cachedPlayerPos;
+        HardStopJoystick(pm, playerPos);
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (g_window) {
+            [g_window updateMasterSwitchUI:NO];
+            [g_window setStatusText:@"Đã dừng Auto (Người chơi điều khiển)"];
+        }
+    });
+    NSLog(@"[THTweak] Player moved joystick manually -> Auto disabled completely!");
+}
+
+static void (*orig_Joystick_OnPointerDown)(void* thisObj, void* eventData, void* methodInfo) = nullptr;
+static void new_Joystick_OnPointerDown(void* thisObj, void* eventData, void* methodInfo) {
+    DisableAllAutoByPlayerMove();
+    if (orig_Joystick_OnPointerDown) orig_Joystick_OnPointerDown(thisObj, eventData, methodInfo);
+}
+
+static void (*orig_Joystick_OnDrag)(void* thisObj, void* eventData, void* methodInfo) = nullptr;
+static void new_Joystick_OnDrag(void* thisObj, void* eventData, void* methodInfo) {
+    DisableAllAutoByPlayerMove();
+    if (orig_Joystick_OnDrag) orig_Joystick_OnDrag(thisObj, eventData, methodInfo);
+}
+
+static void (*orig_DynamicJoystick_OnPointerDown)(void* thisObj, void* eventData, void* methodInfo) = nullptr;
+static void new_DynamicJoystick_OnPointerDown(void* thisObj, void* eventData, void* methodInfo) {
+    DisableAllAutoByPlayerMove();
+    if (orig_DynamicJoystick_OnPointerDown) orig_DynamicJoystick_OnPointerDown(thisObj, eventData, methodInfo);
+}
+
+static void (*orig_FloatingJoystick_OnPointerDown)(void* thisObj, void* eventData, void* methodInfo) = nullptr;
+static void new_FloatingJoystick_OnPointerDown(void* thisObj, void* eventData, void* methodInfo) {
+    DisableAllAutoByPlayerMove();
+    if (orig_FloatingJoystick_OnPointerDown) orig_FloatingJoystick_OnPointerDown(thisObj, eventData, methodInfo);
+}
+
+static void EnsureJoystickHooks() {
+    static bool s_joyHooked = false;
+    if (s_joyHooked) return;
+    void* joystickKlass = ScanFindClass("", "Joystick");
+    if (joystickKlass) {
+        void* onPointerDown_mi = FindMethodInHierarchy(joystickKlass, "OnPointerDown", 1);
+        if (onPointerDown_mi) {
+            HookIl2CppMethod(onPointerDown_mi, (void*)&new_Joystick_OnPointerDown, (void**)&orig_Joystick_OnPointerDown);
+        }
+        void* onDrag_mi = FindMethodInHierarchy(joystickKlass, "OnDrag", 1);
+        if (onDrag_mi) {
+            HookIl2CppMethod(onDrag_mi, (void*)&new_Joystick_OnDrag, (void**)&orig_Joystick_OnDrag);
+        }
+        s_joyHooked = true;
+        NSLog(@"[THTweak] Hooked Joystick OnPointerDown and OnDrag successfully");
+    }
+    void* dynamicJoystickKlass = ScanFindClass("", "DynamicJoystick");
+    if (dynamicJoystickKlass) {
+        void* dynPointerDown_mi = FindMethodInHierarchy(dynamicJoystickKlass, "OnPointerDown", 1);
+        if (dynPointerDown_mi) {
+            HookIl2CppMethod(dynPointerDown_mi, (void*)&new_DynamicJoystick_OnPointerDown, (void**)&orig_DynamicJoystick_OnPointerDown);
+        }
+    }
+    void* floatingJoystickKlass = ScanFindClass("", "FloatingJoystick");
+    if (floatingJoystickKlass) {
+        void* floatPointerDown_mi = FindMethodInHierarchy(floatingJoystickKlass, "OnPointerDown", 1);
+        if (floatPointerDown_mi) {
+            HookIl2CppMethod(floatPointerDown_mi, (void*)&new_FloatingJoystick_OnPointerDown, (void**)&orig_FloatingJoystick_OnPointerDown);
+        }
+    }
+}
+
 static void ScanEquipmentList(void* listObj, int32_t eqType, int32_t rareType, int32_t level, bool &shouldEquip) {
     if (!listObj) return;
     void* arr = *(void**)((uint8_t*)listObj + 0x10);
@@ -1533,6 +1611,7 @@ static void TickCheats() {
     if (g_window) [g_window attachWindowSceneIfNeeded];
     if (!s_attached) return;
     EnsureAdHooks();
+    EnsureJoystickHooks();
 
     static int s_cacheResetTicks = 0;
     if (++s_cacheResetTicks > 10) {
@@ -1656,10 +1735,10 @@ static void TickCheats() {
                 g_wasDead = true;
                 g_deathPos = playerPos;
                 g_hasDeathPos = true;
-                g_hasFarmPosBeforeFire = false;
+                g_hasFarmPosBeforeVillage = false;
                 g_isReturningToFarm = false;
-                g_isGoingToFire = false;
-                g_isAtFireForRecipe = false;
+                g_isGoingToVillage = false;
+                g_isAtVillageForRecipe = false;
             }
         } else {
             if (g_wasDead) {
@@ -1847,20 +1926,18 @@ static void TickCheats() {
 
     // Recipe Auto Merge Ingredients (Tự động ghép đá theo công thức)
     bool recipeMergedThisTick = false;
-    static double s_campfireArriveTime = 0;
-    static double s_campfireRetryCooldown = 0;
+    static double s_villageArriveTime = 0;
+    static double s_villageRetryCooldown = 0;
     double nowTickTime = [[NSProcessInfo processInfo] systemUptime];
 
     if (g_recipeMergeEnabled && g_currentRecipe.valid && playerObj) {
         bool canMergeAtLocation = true;
-        if (g_recipeMergeGoToFire) {
-            Vector3 firePos;
-            float fireDist = 999999.0f;
-            if (GetClosestFireCraftPosition(playerPos, &firePos, &fireDist)) {
-                // If campfire is found on map, only merge when arrived at campfire or within 4.5m
-                if (!g_isAtFireForRecipe && fireDist > 4.5f) {
-                    canMergeAtLocation = false;
-                }
+        Vector3 villagePos;
+        float villageDist = 999999.0f;
+        if (GetClosestVillagePosition(playerPos, &villagePos, &villageDist)) {
+            // Only merge when arrived at village or within 4.5m of village center
+            if (!g_isAtVillageForRecipe && villageDist > 4.5f) {
+                canMergeAtLocation = false;
             }
         }
 
@@ -1988,63 +2065,63 @@ static void TickCheats() {
         }
     }
 
-    // Recipe Campfire Navigation logic
-    g_isGoingToFire = false;
-    g_isAtFireForRecipe = false;
+    // Recipe Village Navigation logic
+    g_isGoingToVillage = false;
+    g_isAtVillageForRecipe = false;
     g_isReturningToFarm = false;
-    if (!g_recipeMergeEnabled || !g_recipeMergeGoToFire || !g_currentRecipe.valid) {
-        g_hasFarmPosBeforeFire = false;
-        s_campfireArriveTime = 0;
+    if (!g_recipeMergeEnabled || !g_currentRecipe.valid) {
+        g_hasFarmPosBeforeVillage = false;
+        s_villageArriveTime = 0;
     }
-    if (!hasTarget && g_recipeMergeEnabled && g_recipeMergeGoToFire && g_currentRecipe.valid && playerObj) {
+    if (!hasTarget && g_recipeMergeEnabled && g_currentRecipe.valid && playerObj) {
         bool formulaReady = CheckIfRecipeFormulaReady(playerObj, nullptr);
 
-        // Safety timeout: if standing at campfire for > 8s and stones are still not consumed, force return to farm
-        bool timedOutAtFire = false;
-        if (s_campfireArriveTime > 0 && (nowTickTime - s_campfireArriveTime > 8.0)) {
-            timedOutAtFire = true;
-            s_campfireRetryCooldown = nowTickTime + 15.0; // Wait 15s before attempting campfire again
-            s_campfireArriveTime = 0;
-            NSLog(@"[THTweak] WARNING: Campfire merge timed out after 8s! Returning to farm...");
+        // Safety timeout: if standing at village for > 8s and stones are still not consumed, force return to farm
+        bool timedOutAtVillage = false;
+        if (s_villageArriveTime > 0 && (nowTickTime - s_villageArriveTime > 8.0)) {
+            timedOutAtVillage = true;
+            s_villageRetryCooldown = nowTickTime + 15.0; // Wait 15s before attempting village again
+            s_villageArriveTime = 0;
+            NSLog(@"[THTweak] WARNING: Village merge timed out after 8s! Returning to farm...");
         }
 
-        if (formulaReady && !timedOutAtFire && nowTickTime > s_campfireRetryCooldown) {
-            Vector3 closestFirePos;
-            float fireDist = 999999.0f;
-            if (GetClosestFireCraftPosition(playerPos, &closestFirePos, &fireDist)) {
-                // Save current farming spot before traveling to fire
-                if (!g_hasFarmPosBeforeFire) {
+        if (formulaReady && !timedOutAtVillage && nowTickTime > s_villageRetryCooldown) {
+            Vector3 closestVillagePos;
+            float villageDist = 999999.0f;
+            if (GetClosestVillagePosition(playerPos, &closestVillagePos, &villageDist)) {
+                // Save current farming spot before traveling to village
+                if (!g_hasFarmPosBeforeVillage) {
                     if (g_lockDigPos && g_hasLockedPos) {
-                        g_farmPosBeforeFire = g_lockedDigPos;
-                        g_hasFarmPosBeforeFire = true;
-                    } else if (fireDist > 4.0f) {
-                        g_farmPosBeforeFire = playerPos;
-                        g_hasFarmPosBeforeFire = true;
+                        g_farmPosBeforeVillage = g_lockedDigPos;
+                        g_hasFarmPosBeforeVillage = true;
+                    } else if (villageDist > 4.0f) {
+                        g_farmPosBeforeVillage = playerPos;
+                        g_hasFarmPosBeforeVillage = true;
                     }
                 }
-                targetPos = closestFirePos;
+                targetPos = closestVillagePos;
                 hasTarget = true;
-                closestDist = fireDist;
+                closestDist = villageDist;
                 isTargetMob = false;
                 g_currentTargetObj = nullptr;
-                if (fireDist > 3.8f) {
-                    g_isGoingToFire = true;
-                    g_isAtFireForRecipe = false;
-                    s_campfireArriveTime = 0;
+                if (villageDist > 3.8f) {
+                    g_isGoingToVillage = true;
+                    g_isAtVillageForRecipe = false;
+                    s_villageArriveTime = 0;
                 } else {
-                    g_isGoingToFire = false;
-                    g_isAtFireForRecipe = true;
-                    if (s_campfireArriveTime == 0) s_campfireArriveTime = nowTickTime;
+                    g_isGoingToVillage = false;
+                    g_isAtVillageForRecipe = true;
+                    if (s_villageArriveTime == 0) s_villageArriveTime = nowTickTime;
                 }
             }
         } else {
             // Recipe formula is NOT ready (crafting completed or ingredients exhausted or timed out):
-            s_campfireArriveTime = 0;
+            s_villageArriveTime = 0;
             // Return back to the original farm position!
             Vector3 returnTarget = {0,0,0};
             bool shouldReturn = false;
-            if (g_hasFarmPosBeforeFire) {
-                returnTarget = g_farmPosBeforeFire;
+            if (g_hasFarmPosBeforeVillage) {
+                returnTarget = g_farmPosBeforeVillage;
                 shouldReturn = true;
             } else if (g_lockDigPos && g_hasLockedPos) {
                 returnTarget = g_lockedDigPos;
@@ -2063,7 +2140,7 @@ static void TickCheats() {
                     g_isReturningToFarm = true;
                 } else {
                     // Arrived back at the original farming spot!
-                    g_hasFarmPosBeforeFire = false;
+                    g_hasFarmPosBeforeVillage = false;
                     g_isReturningToFarm = false;
                 }
             }
@@ -2280,7 +2357,7 @@ static void TickCheats() {
         }
     }
 }
-    if (!g_isGoingToFire && !g_isAtFireForRecipe && !g_isReturningToFarm && g_lockDigPos && g_hasLockedPos) {
+    if (!g_isGoingToVillage && !g_isAtVillageForRecipe && !g_isReturningToFarm && g_lockDigPos && g_hasLockedPos) {
         float playerDx = playerPos.x - g_lockedDigPos.x;
         float playerDy = playerPos.y - g_lockedDigPos.y;
         float playerDistFromLocked = sqrtf(playerDx*playerDx + playerDy*playerDy);
@@ -2379,8 +2456,8 @@ static void TickCheats() {
     // Trigger network requests at 0.3s interval instead of 60FPS to prevent lag
     if (hasTarget && playerObj) {
         bool inDigRange = false;
-        bool isCampfireNav = (g_isGoingToFire || g_isAtFireForRecipe || g_isReturningToFarm);
-        if (!isTargetMob && !isCampfireNav) {
+        bool isVillageNav = (g_isGoingToVillage || g_isAtVillageForRecipe || g_isReturningToFarm);
+        if (!isTargetMob && !isVillageNav) {
             float dx = targetPos.x - playerPos.x;
             float dy = targetPos.y - playerPos.y;
             float boxDist = fmaxf(fabsf(dx), fabsf(dy));
@@ -2988,16 +3065,8 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
         [self updateRecipeInfoLabel];
         [rRecBtn addSubview:_btnRecipeInput]; [rRecBtn addSubview:btnClearRec]; [rRecBtn addSubview:_lblRecipeInfo]; [_subDoView addSubview:rRecBtn];
 
-        // Go to nearest campfire row
-        CGFloat yGoFire = yRecBtn + 56 + 6;
-        UIView *rGoFire = MakeRow(CGRectMake(8, yGoFire, PW-16, ROW));
-        UILabel *lGoFire = MakeLabel(@"Tìm trại lửa gần nhất để ghép", CGRectMake(10, 7, PW-16-66, 30), 12.0, [UIColor whiteColor]);
-        _swRecipeMergeGoToFire = MakeSwitch(PW-16-56, 7, g_recipeMergeGoToFire);
-        [_swRecipeMergeGoToFire addTarget:self action:@selector(swRecipeMergeGoToFireChanged:) forControlEvents:UIControlEventValueChanged];
-        [rGoFire addSubview:lGoFire]; [rGoFire addSubview:_swRecipeMergeGoToFire]; [_subDoView addSubview:rGoFire];
-
         // Auto Merge Ingredient row (3 stones)
-        CGFloat y5 = yGoFire + ROW + 6;
+        CGFloat y5 = yRecBtn + 56 + 6;
         UIView *r5 = MakeRow(CGRectMake(8, y5, PW-16, ROW));
         UILabel *l5 = MakeLabel(@"Ghép 3 viên cùng loại (mặc định)", CGRectMake(10, 7, PW-16-66, 30), 12.0, [UIColor whiteColor]);
         _swAutoMergeIngredient = MakeSwitch(PW-16-56, 7, g_autoMergeIngredient);
@@ -3033,9 +3102,9 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
         // Master Switch row
         UIView *r0 = MakeRow(CGRectMake(8, 8, PW-16, ROW));
         UILabel *l0 = MakeLabel(@"Bật hệ thống Auto", CGRectMake(10, 7, PW-16-66, 30), 12.5, [UIColor whiteColor]);
-        UISwitch *swMaster = MakeSwitch(PW-16-56, 7, g_menuMasterSwitch);
-        [swMaster addTarget:self action:@selector(swMasterChanged:) forControlEvents:UIControlEventValueChanged];
-        [r0 addSubview:l0]; [r0 addSubview:swMaster]; [_settingsPageView addSubview:r0];
+        _swMaster = MakeSwitch(PW-16-56, 7, g_menuMasterSwitch);
+        [_swMaster addTarget:self action:@selector(swMasterChanged:) forControlEvents:UIControlEventValueChanged];
+        [r0 addSubview:l0]; [r0 addSubview:_swMaster]; [_settingsPageView addSubview:r0];
 
         // Radar circle HUD row
         UIView *rRadar = MakeRow(CGRectMake(8, ROW+18, PW-16, ROW));
@@ -3264,14 +3333,14 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
     bool shouldMove = false;
     bool reachedTarget = false;
 
-    bool isCampfireNav = (g_isGoingToFire || g_isAtFireForRecipe || g_isReturningToFarm);
+    bool isVillageNav = (g_isGoingToVillage || g_isAtVillageForRecipe || g_isReturningToFarm);
 
-    if (g_hasCachedTarget && (g_autoDig || isCampfireNav || (g_autoAttackMobs && g_cachedTargetIsMob))) {
+    if (g_hasCachedTarget && (g_autoDig || isVillageNav || (g_autoAttackMobs && g_cachedTargetIsMob))) {
         float dirX = g_cachedTargetPos.x - playerPos.x;
         float dirY = g_cachedTargetPos.y - playerPos.y;
         float dist = sqrtf(dirX*dirX + dirY*dirY);
         float boxDist = fmaxf(fabsf(dirX), fabsf(dirY));
-        float checkDist = (g_cachedTargetIsMob || isCampfireNav) ? dist : boxDist;
+        float checkDist = (g_cachedTargetIsMob || isVillageNav) ? dist : boxDist;
 
         // Hysteresis logic: only reset if target moved to a distinct tile (> 0.6m)
         float targetMoved = sqrtf(powf(g_cachedTargetPos.x - g_lastTargetPos.x, 2) + powf(g_cachedTargetPos.y - g_lastTargetPos.y, 2));
@@ -3280,21 +3349,21 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
             g_lastTargetPos = g_cachedTargetPos;
         }
 
-        float stopDist = g_cachedTargetIsMob ? 1.0f : (g_isGoingToFire ? 3.5f : (g_isReturningToFarm ? 1.0f : (isCampfireNav ? 3.5f : fmaxf(g_digStopDist, 0.40f))));
+        float stopDist = g_cachedTargetIsMob ? 1.0f : (g_isGoingToVillage ? 3.5f : (g_isReturningToFarm ? 1.0f : (isVillageNav ? 3.5f : fmaxf(g_digStopDist, 0.40f))));
 
         if (g_isAtTarget) {
-            float leaveDist = g_cachedTargetIsMob ? 1.4f : (g_isGoingToFire ? 4.2f : (g_isReturningToFarm ? 1.4f : (isCampfireNav ? 4.2f : 1.10f)));
-            if (checkDist > leaveDist && !g_isAtFireForRecipe) {
+            float leaveDist = g_cachedTargetIsMob ? 1.4f : (g_isGoingToVillage ? 4.2f : (g_isReturningToFarm ? 1.4f : (isVillageNav ? 4.2f : 1.10f)));
+            if (checkDist > leaveDist && !g_isAtVillageForRecipe) {
                 g_isAtTarget = false;
             }
         } else {
-            if (checkDist <= stopDist || g_isAtFireForRecipe) {
+            if (checkDist <= stopDist || g_isAtVillageForRecipe) {
                 g_isAtTarget = true;
                 g_targetStartTime = [[NSProcessInfo processInfo] systemUptime];
             }
         }
 
-        if (!g_isAtTarget && !g_isAtFireForRecipe) {
+        if (!g_isAtTarget && !g_isAtVillageForRecipe) {
             moveX = dirX;
             moveY = dirY;
             shouldMove = true;
@@ -3365,8 +3434,8 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
     if (reachedTarget && !shouldMove) {
         if (g_isReturningToFarm) {
             if (g_window) [g_window setStatusText:@"Đã về bãi farm - Tiếp tục đào..."];
-        } else if (isCampfireNav) {
-            if (g_window) [g_window setStatusText:@"Đã đến trại lửa - Đang ghép đá..."];
+        } else if (isVillageNav) {
+            if (g_window) [g_window setStatusText:@"Đã đến làng - Đang ghép đồ..."];
         } else {
             if (g_window) [g_window setStatusText:@"Đã đến đích - Đang đào..."];
         }
@@ -3383,7 +3452,7 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
             moveY /= len;
 
             // Apply speed scaling near tile AFTER normalization to ensure it is not wiped out
-            if (g_hasCachedTarget && !g_cachedTargetIsMob && !isCampfireNav) {
+            if (g_hasCachedTarget && !g_cachedTargetIsMob && !isVillageNav) {
                 float dx = g_cachedTargetPos.x - playerPos.x;
                 float dy = g_cachedTargetPos.y - playerPos.y;
                 float boxDist = fmaxf(fabsf(dx), fabsf(dy));
@@ -3440,7 +3509,7 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
     }
 
     static bool s_wasAutoMoving = false;
-    bool isAutoEnabled = g_menuMasterSwitch && (g_autoDig || isCampfireNav || g_autoAttackMobs || g_autoAvoidMobs || g_avoidPlayers);
+    bool isAutoEnabled = g_menuMasterSwitch && (g_autoDig || isVillageNav || g_autoAttackMobs || g_autoAvoidMobs || g_avoidPlayers);
 
     // If no auto functions are active, do not touch player joystick/movement inputs
     if (!isAutoEnabled) {
@@ -3488,16 +3557,16 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
 
     // Status update
     if (g_window) {
-        if (g_isAtFireForRecipe) {
-            [g_window setStatusText:@"Đang ở trại lửa - Đang ghép đá..."];
+        if (g_isAtVillageForRecipe) {
+            [g_window setStatusText:@"Đang ở làng - Đang ghép đồ..."];
         } else if (g_isReturningToFarm) {
             [g_window setStatusText:[NSString stringWithFormat:@"Về bãi farm | %.1fm", g_cachedClosestDist]];
-        } else if (g_isGoingToFire) {
-            [g_window setStatusText:[NSString stringWithFormat:@"Đến trại lửa | %.1fm", g_cachedClosestDist]];
+        } else if (g_isGoingToVillage) {
+            [g_window setStatusText:[NSString stringWithFormat:@"Về làng ghép đồ | %.1fm", g_cachedClosestDist]];
         } else if (g_hasCachedTarget && (g_autoDig || g_autoAttackMobs)) {
             NSString *tName = g_cachedTargetIsMob ? @"Quái vật" : @"Khối đất";
             [g_window setStatusText:[NSString stringWithFormat:@"Bám: %@ | %.1fm", tName, g_cachedClosestDist]];
-        } else if (g_autoDig || g_autoAttackMobs || isCampfireNav) {
+        } else if (g_autoDig || g_autoAttackMobs || isVillageNav) {
             [g_window setStatusText:@"Không tìm thấy mục tiêu!"];
         } else {
             [g_window setStatusText:@"Trạng thái: Chờ kích hoạt"];
@@ -3505,7 +3574,7 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
     }
 
     // Target Tile/Mob Distance ESP Overlay (Without drawing lines)
-    if (g_hasCachedTarget && (g_autoDig || isCampfireNav || (g_autoAttackMobs && g_cachedTargetIsMob))) {
+    if (g_hasCachedTarget && (g_autoDig || isVillageNav || (g_autoAttackMobs && g_cachedTargetIsMob))) {
         static void* get_mainMI = nullptr;
         static void* worldToScreenPointMI = nullptr;
         static void* cameraKlass = nullptr;
@@ -3711,10 +3780,8 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
     [[NSUserDefaults standardUserDefaults] setBool:g_recipeMergeEnabled forKey:@"THTweak_RecipeMerge"];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
-- (void)swRecipeMergeGoToFireChanged:(UISwitch *)s {
-    g_recipeMergeGoToFire = s.on;
-    [[NSUserDefaults standardUserDefaults] setBool:g_recipeMergeGoToFire forKey:@"THTweak_RecipeMergeGoToFire"];
-    [[NSUserDefaults standardUserDefaults] synchronize];
+- (void)updateMasterSwitchUI:(BOOL)on {
+    if (_swMaster) _swMaster.on = on;
 }
 - (void)btnRecipeInputPressed:(UIButton *)sender {
     [self showRecipeInputDialog];
@@ -4666,6 +4733,7 @@ __attribute__((constructor)) static void entry() {
                                     NSLog(@"[THTweak] Hooked HUDView.RequestAd successfully");
                                 }
                             }
+                            EnsureJoystickHooks();
                             
                             // License Check: Immediately approves if machine UDID or saved key is active on Google Sheets
                             CheckDeviceLicense(^(BOOL success, NSString *keyUsed, NSString *expiry, NSString *errMsg) {
