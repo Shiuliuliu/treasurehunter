@@ -658,6 +658,88 @@ static bool CheckIfRecipeFormulaReady(void* playerObj, std::vector<void*>* outMa
     return false;
 }
 
+static void* GetMergeIngredientMethod(void* pbKlass) {
+    static void* s_targetMergeMI = nullptr;
+    if (s_targetMergeMI) return s_targetMergeMI;
+    if (!pbKlass) pbKlass = ScanFindClass("", "PlayerBehavior");
+    if (pbKlass) {
+        s_targetMergeMI = FindMethodInHierarchy(pbKlass, "RequestMergeIngredient", 2);
+        if (!s_targetMergeMI)
+            s_targetMergeMI = FindMethodInHierarchy(pbKlass, "RequesAutoMergeIngredient", 2);
+        if (!s_targetMergeMI)
+            s_targetMergeMI = FindMethodInHierarchy(pbKlass, "CmdMergeIngredient", 2);
+        if (!s_targetMergeMI)
+            s_targetMergeMI = FindMethodInHierarchy(pbKlass, "CmdAutoMergeIngredient", 2);
+    }
+    return s_targetMergeMI;
+}
+
+static void* CreateIl2CppStringList(const std::vector<void*>& stringIds, void* playerObj, void* methodInfo) {
+    static void* s_listStringKlass = nullptr;
+    static void* s_listStringCtor = nullptr;
+    static void* s_listStringAdd = nullptr;
+
+    if (!s_listStringKlass) {
+        // 1. Try from methodInfo parameter 0
+        if (methodInfo && IL2CPP::il2cpp_method_get_param && IL2CPP::il2cpp_class_from_type) {
+            const void* pType = IL2CPP::il2cpp_method_get_param(methodInfo, 0);
+            if (pType) {
+                s_listStringKlass = (void*)IL2CPP::il2cpp_class_from_type(pType);
+            }
+        }
+
+        // 2. Fallback: Try from playerObj's existing List<string> fields
+        if (!s_listStringKlass && playerObj) {
+            void* ex = *(void**)((uint8_t*)playerObj + 0x398); // currenOrderIds
+            if (!ex) ex = *(void**)((uint8_t*)playerObj + 0x430); // activationCodes
+            if (!ex) ex = *(void**)((uint8_t*)playerObj + 0x438); // claimedSocialRewards
+            if (ex && IsValidUnityObj(ex)) {
+                s_listStringKlass = *(void**)ex; // Il2CppObject::klass
+            }
+        }
+    }
+
+    if (s_listStringKlass) {
+        if (IL2CPP::il2cpp_runtime_class_init) {
+            IL2CPP::il2cpp_runtime_class_init(s_listStringKlass);
+        }
+
+        if (!s_listStringCtor) s_listStringCtor = FindMethodInHierarchy(s_listStringKlass, ".ctor", 0);
+        if (!s_listStringAdd)  s_listStringAdd  = FindMethodInHierarchy(s_listStringKlass, "Add", 1);
+
+        if ((!s_listStringCtor || !s_listStringAdd) && IL2CPP::il2cpp_class_get_methods) {
+            void* iter = nullptr;
+            while (void* m = IL2CPP::il2cpp_class_get_methods(s_listStringKlass, &iter)) {
+                const char* mn = IL2CPP::il2cpp_method_get_name ? IL2CPP::il2cpp_method_get_name(m) : nullptr;
+                if (mn) {
+                    if (!s_listStringCtor && strcmp(mn, ".ctor") == 0) s_listStringCtor = m;
+                    if (!s_listStringAdd && strcmp(mn, "Add") == 0) s_listStringAdd = m;
+                }
+            }
+        }
+    }
+
+    if (!s_listStringKlass || !IL2CPP::il2cpp_object_new) return nullptr;
+
+    void* listObj = IL2CPP::il2cpp_object_new(s_listStringKlass);
+    if (!listObj) return nullptr;
+
+    if (s_listStringCtor) {
+        SafeInvoke(s_listStringCtor, listObj, nullptr);
+    }
+
+    if (s_listStringAdd) {
+        for (void* sId : stringIds) {
+            if (sId) {
+                void* p[1] = { sId };
+                SafeInvoke(s_listStringAdd, listObj, p);
+            }
+        }
+    }
+
+    return listObj;
+}
+
 static bool GetClosestFireCraftPosition(Vector3 playerPos, Vector3* outClosestFire, float* outDist) {
     if (!outClosestFire) return false;
 
@@ -1658,7 +1740,7 @@ static void TickCheats() {
             Vector3 firePos;
             float fireDist = 999999.0f;
             if (GetClosestFireCraftPosition(playerPos, &firePos, &fireDist)) {
-                if (fireDist > 1.5f) {
+                if (fireDist > 3.0f) {
                     canMergeAtLocation = false;
                 }
             }
@@ -1671,42 +1753,24 @@ static void TickCheats() {
                 lastRecipeMergeTime = nowRecipeMergeTime;
                 std::vector<void*> matchedIds;
                 if (CheckIfRecipeFormulaReady(playerObj, &matchedIds) && !matchedIds.empty()) {
-                    static void* requestMergeIngredientMI = nullptr;
-                    static void* pbKlass = nullptr;
-                    static void* listStringKlass = nullptr;
-                    static void* listStringCtor = nullptr;
-                    static void* listStringAdd = nullptr;
-
-                    if (!pbKlass) pbKlass = ScanFindClass("", "PlayerBehavior");
-                    if (pbKlass && !requestMergeIngredientMI) {
-                        requestMergeIngredientMI = FindMethodInHierarchy(pbKlass, "RequestMergeIngredient", 2);
-                        if (!requestMergeIngredientMI)
-                            requestMergeIngredientMI = FindMethodInHierarchy(pbKlass, "RequesAutoMergeIngredient", 2);
-                        if (requestMergeIngredientMI && IL2CPP::il2cpp_method_get_param && IL2CPP::il2cpp_class_from_type) {
-                            const void* pType = IL2CPP::il2cpp_method_get_param(requestMergeIngredientMI, 0);
-                            if (pType) {
-                                listStringKlass = (void*)IL2CPP::il2cpp_class_from_type(pType);
-                                if (listStringKlass) {
-                                    listStringCtor = FindMethodInHierarchy(listStringKlass, ".ctor", 0);
-                                    listStringAdd = FindMethodInHierarchy(listStringKlass, "Add", 1);
-                                }
-                            }
-                        }
-                    }
-
-                    if (requestMergeIngredientMI && listStringKlass && listStringAdd) {
-                        void* listObj = IL2CPP::il2cpp_object_new(listStringKlass);
+                    void* pbKlass = ScanFindClass("", "PlayerBehavior");
+                    void* mergeMI = GetMergeIngredientMethod(pbKlass);
+                    if (mergeMI) {
+                        void* listObj = CreateIl2CppStringList(matchedIds, playerObj, mergeMI);
                         if (listObj) {
-                            if (listStringCtor) SafeInvoke(listStringCtor, listObj, nullptr);
-                            for (void* sId : matchedIds) {
-                                void* p[1] = { sId };
-                                SafeInvoke(listStringAdd, listObj, p);
-                            }
                             int32_t apiToken = *(int32_t*)((uint8_t*)playerObj + 0x29c);
                             void* params[2] = { listObj, &apiToken };
-                            SafeInvoke(requestMergeIngredientMI, playerObj, params);
+                            SafeInvoke(mergeMI, playerObj, params);
                             recipeMergedThisTick = true;
+                            NSLog(@"[THTweak] Successfully sent merge request with %lu stones!", (unsigned long)matchedIds.size());
+                            if (g_window) [g_window setStatusText:[NSString stringWithFormat:@"Đã gửi ghép %lu viên đá!", (unsigned long)matchedIds.size()]];
+                        } else {
+                            NSLog(@"[THTweak] ERROR: Could not create List<string> for merge!");
+                            if (g_window) [g_window setStatusText:@"Lỗi: Không tạo được danh sách đá!"];
                         }
+                    } else {
+                        NSLog(@"[THTweak] ERROR: No merge method found in PlayerBehavior!");
+                        if (g_window) [g_window setStatusText:@"Lỗi: Không tìm thấy hàm ghép đá!"];
                     }
                 }
             }
@@ -1767,40 +1831,15 @@ static void TickCheats() {
                         }
 
                         if (foundTrio) {
-                            static void* requestMergeIngredientMI = nullptr;
-                            static void* pbKlass = nullptr;
-                            static void* listStringKlass = nullptr;
-                            static void* listStringCtor = nullptr;
-                            static void* listStringAdd = nullptr;
-
-                            if (!pbKlass) pbKlass = ScanFindClass("", "PlayerBehavior");
-                            if (pbKlass && !requestMergeIngredientMI) {
-                                requestMergeIngredientMI = FindMethodInHierarchy(pbKlass, "RequestMergeIngredient", 2);
-                                if (!requestMergeIngredientMI)
-                                    requestMergeIngredientMI = FindMethodInHierarchy(pbKlass, "RequesAutoMergeIngredient", 2);
-                                if (requestMergeIngredientMI && IL2CPP::il2cpp_method_get_param && IL2CPP::il2cpp_class_from_type) {
-                                    const void* pType = IL2CPP::il2cpp_method_get_param(requestMergeIngredientMI, 0);
-                                    if (pType) {
-                                        listStringKlass = (void*)IL2CPP::il2cpp_class_from_type(pType);
-                                        if (listStringKlass) {
-                                            listStringCtor = FindMethodInHierarchy(listStringKlass, ".ctor", 0);
-                                            listStringAdd = FindMethodInHierarchy(listStringKlass, "Add", 1);
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (requestMergeIngredientMI && listStringKlass && listStringAdd) {
-                                void* listObj = IL2CPP::il2cpp_object_new(listStringKlass);
-                                if (listObj) {
-                                    if (listStringCtor) SafeInvoke(listStringCtor, listObj, nullptr);
-                                    for (int k = 0; k < 3; k++) {
-                                        void* p[1] = { matchIds[k] };
-                                        SafeInvoke(listStringAdd, listObj, p);
-                                    }
+                            void* pbKlass = ScanFindClass("", "PlayerBehavior");
+                            void* mergeMI = GetMergeIngredientMethod(pbKlass);
+                            if (mergeMI) {
+                                std::vector<void*> trio = { matchIds[0], matchIds[1], matchIds[2] };
+                                void* mergeList = CreateIl2CppStringList(trio, playerObj, mergeMI);
+                                if (mergeList) {
                                     int32_t apiToken = *(int32_t*)((uint8_t*)playerObj + 0x29c);
-                                    void* params[2] = { listObj, &apiToken };
-                                    SafeInvoke(requestMergeIngredientMI, playerObj, params);
+                                    void* params[2] = { mergeList, &apiToken };
+                                    SafeInvoke(mergeMI, playerObj, params);
                                 }
                             }
                         }
@@ -1848,7 +1887,7 @@ static void TickCheats() {
                     if (g_lockDigPos && g_hasLockedPos) {
                         g_farmPosBeforeFire = g_lockedDigPos;
                         g_hasFarmPosBeforeFire = true;
-                    } else if (fireDist > 2.0f) {
+                    } else if (fireDist > 3.0f) {
                         g_farmPosBeforeFire = playerPos;
                         g_hasFarmPosBeforeFire = true;
                     }
@@ -1858,7 +1897,7 @@ static void TickCheats() {
                 closestDist = fireDist;
                 isTargetMob = false;
                 g_currentTargetObj = nullptr;
-                if (fireDist > 1.2f) {
+                if (fireDist > 2.2f) {
                     g_isGoingToFire = true;
                 } else {
                     g_isAtFireForRecipe = true;
@@ -3106,10 +3145,11 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
             g_lastTargetPos = g_cachedTargetPos;
         }
 
-        float stopDist = (g_cachedTargetIsMob || isCampfireNav) ? 1.0f : fmaxf(g_digStopDist, 0.40f);
+        float stopDist = g_cachedTargetIsMob ? 1.0f : (g_isGoingToFire ? 1.8f : (g_isReturningToFarm ? 1.0f : (isCampfireNav ? 1.8f : fmaxf(g_digStopDist, 0.40f))));
 
         if (g_isAtTarget) {
-            if (checkDist > ((g_cachedTargetIsMob || isCampfireNav) ? 1.4f : 1.10f)) {
+            float leaveDist = g_cachedTargetIsMob ? 1.4f : (g_isGoingToFire ? 2.5f : (g_isReturningToFarm ? 1.4f : (isCampfireNav ? 2.5f : 1.10f)));
+            if (checkDist > leaveDist) {
                 g_isAtTarget = false;
             }
         } else {
