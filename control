@@ -1,0 +1,9 @@
+Package: com.megacombat.treasurehunter.cheat
+Name: Treasure Hunter VIP Tweak
+Depends: mobilesubstrate
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Cheat Tweak for Treasure Hunter with Auto-Dig, God Mode, Speed Hack, and Auto Pickup.
+Maintainer: VIP Mods
+Author: VIP Mods
+Section: Tweaks

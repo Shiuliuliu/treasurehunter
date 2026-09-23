@@ -1,0 +1,21 @@
+# Binary builds & huge game assets
+apk/
+apkupdate/
+decompiled/
+dump_422/
+dump_423/
+
+# Python cache & temp
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary / Scratch
+check_braces.py
+*.tmp
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

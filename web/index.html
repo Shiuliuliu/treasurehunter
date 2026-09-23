@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Treasure Hunter - Xưởng Ghép Đá Tự Động Pro</title>
+  <link rel="icon" type="image/png" href="images/damage.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-icon">💎</div>
+      <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="brand-name">TREASURE HUNTER</span>
+          <span class="badge-pro">Ghép Đá PRO</span>
+        </div>
+        <span style="font-size: 0.7rem; color: var(--text-dim);">Studio Tạo &amp; Tối Ưu Công Thức Ghép Đá Tự Động</span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <button id="btnLoadPreset" class="btn btn-outline btn-sm" title="Nạp công thức ví dụ mẫu">
+        <span>✨ Công thức mẫu</span>
+      </button>
+      <button id="btnOpenImport" class="btn btn-outline" title="Nhập mã Base64 có sẵn">
+        <span>📥 Nhập Mã</span>
+      </button>
+      <button id="btnCopyCode" class="btn btn-primary" title="Sao chép mã để dán vào game">
+        <span>📋 Sao Chép Mã</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Multi-Column Studio Workspace -->
+  <main class="app-container">
+
+    <!-- LEFT PANEL: Recipe Selector, Groups, and Cost Summary -->
+    <aside class="glass-panel panel-left">
+      <div class="panel-header">
+        <span class="panel-title"><i>📁</i> Quản Lý Công Thức</span>
+        <button id="btnNewRecipe" class="btn btn-primary btn-sm" title="Tạo hồ sơ công thức mới">+ Mới</button>
+      </div>
+
+      <div class="recipe-selector-box">
+        <label style="font-size: 0.72rem; color: var(--text-dim); font-weight: 700;">HỒ SƠ CÔNG THỨC</label>
+        <select id="recipeSelect" class="input-select"></select>
+        
+        <div class="recipe-name-row">
+          <input type="text" id="recipeNameInput" class="input-text" placeholder="Tên công thức..." title="Đổi tên công thức"/>
+          <button id="btnDeleteRecipe" class="btn btn-danger btn-sm" title="Xóa công thức hiện tại">Xóa</button>
+        </div>
+      </div>
+
+      <!-- Cost Summary Cards -->
+      <div class="cost-summary-card">
+        <div style="font-size: 0.75rem; font-weight: 700; color: #fff; margin-bottom: 8px; display: flex; justify-content: space-between;">
+          <span>Ước Tính Tài Nguyên Ghép</span>
+          <span id="costStoneCount" style="color: var(--accent-purple); font-weight: 800;">8/8</span>
+        </div>
+        <div class="cost-grid">
+          <div class="cost-item">
+            <span class="cost-icon">🪙</span>
+            <div class="cost-data">
+              <span class="cost-label">Vàng Cần</span>
+              <span id="costGold" class="cost-val gold">0</span>
+            </div>
+          </div>
+          <div class="cost-item">
+            <span class="cost-icon">💎</span>
+            <div class="cost-data">
+              <span class="cost-label">Kim Cương</span>
+              <span id="costDiamond" class="cost-val diamond">0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Groups Management -->
+      <div class="panel-header" style="margin-top: 4px;">
+        <span class="panel-title"><i>🔗</i> Nhóm Đá Linh Hoạt</span>
+        <button id="btnNewGroup" class="btn btn-outline btn-sm">+ Tạo Nhóm</button>
+      </div>
+      <div class="groups-box">
+        <div id="groupsList" class="groups-list"></div>
+      </div>
+    </aside>
+
+    <!-- CENTER PANEL: 8-Slot Crafting Matrix & Quick Modifier -->
+    <section class="glass-panel panel-center">
+      <div class="panel-header">
+        <span class="panel-title"><i>🔮</i> Bàn Ghép Đá (8 Ô Ghép)</span>
+        <div style="display: flex; gap: 6px;">
+          <button id="btnClearFormula" class="btn btn-outline btn-sm" title="Làm trống toàn bộ 8 ô">Dọn Sạch</button>
+          <button id="btnFillAllSlots" class="btn btn-outline btn-sm" title="Phủ đá đang chọn vào cả 8 ô">Phủ Đầy 8 Ô</button>
+        </div>
+      </div>
+
+      <!-- Formula Sub-Tabs (Bộ ghép 1, Bộ ghép 2...) -->
+      <div id="formulaTabsBar" class="formula-tabs-bar"></div>
+
+      <!-- The 8-Gemstone Sockets Grid -->
+      <div class="matrix-container">
+        <div id="matrixGrid" class="matrix-grid"></div>
+        <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 10px; display: flex; gap: 16px;">
+          <span>💡 <b>Nhấp chuột:</b> Chọn ô</span>
+          <span>💡 <b>Nhấp đúp:</b> Gỡ đá khỏi ô</span>
+          <span>💡 <b>Kéo &amp; thả:</b> Kéo đá từ kho vào ô</span>
+        </div>
+      </div>
+
+      <!-- Quick Slot Modifier & Inspector -->
+      <div id="slotModifierBox" class="slot-modifier-panel">
+        <div class="modifier-header">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 700;">ĐANG CHỈNH SỬA:</span>
+            <span id="currentSlotTitle" class="modifier-title">Ô số #1</span>
+          </div>
+          <button id="btnClearCurrentSlot" class="btn btn-danger btn-sm">Gỡ Đá Này</button>
+        </div>
+
+        <!-- Level Stepper -->
+        <div class="level-control-row">
+          <span style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted);">Cấp Độ Đá (Level):</span>
+          <div class="level-stepper">
+            <button id="btnLevelDec" class="btn-step" title="Giảm cấp">-</button>
+            <span id="currentSlotLevelDisplay" class="level-val-display">Lv.1</span>
+            <button id="btnLevelInc" class="btn-step" title="Tăng cấp">+</button>
+          </div>
+        </div>
+
+        <!-- Rarity Pill Selector -->
+        <div>
+          <span style="font-size: 0.8rem; font-weight: 700; color: var(--text-muted); display: block; margin-bottom: 6px;">Phẩm Chất Đá (Rarity):</span>
+          <div class="rarity-pill-selector">
+            <div class="rarity-pill rarity-common" data-rarity="0">⚪ Thường</div>
+            <div class="rarity-pill rarity-rare" data-rarity="1">🔵 Hiếm</div>
+            <div class="rarity-pill rarity-epic" data-rarity="2">🟣 Sử Thi</div>
+            <div class="rarity-pill rarity-legendary" data-rarity="3">🟠 Huyền Thoại</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT PANEL: Gemstone Vault Catalog -->
+    <aside class="glass-panel panel-right">
+      <div class="panel-header">
+        <span class="panel-title"><i>📦</i> Kho Đá &amp; Cổ Vật</span>
+        <span style="font-size: 0.75rem; color: var(--text-dim); font-weight: 600;">27 Loại Chuẩn</span>
+      </div>
+
+      <!-- Search & Filters -->
+      <div class="vault-search-row">
+        <input type="text" id="vaultSearchInput" class="input-text" placeholder="🔍 Tìm tên đá, chỉ số hoặc ID..."/>
+      </div>
+
+      <div class="vault-filter-tabs">
+        <button class="vault-tab active" data-category="all">Tất cả</button>
+        <button class="vault-tab" data-category="stat">Chỉ số</button>
+        <button class="vault-tab" data-category="special">Đặc biệt</button>
+        <button class="vault-tab" data-category="artifact">Cổ vật</button>
+        <button class="vault-tab" data-category="group">Nhóm đá</button>
+      </div>
+
+      <!-- Scrollable Gemstone Grid -->
+      <div id="vaultGrid" class="vault-grid"></div>
+    </aside>
+
+  </main>
+
+  <!-- Bottom Code Action Dock -->
+  <footer class="export-panel">
+    <div style="display: flex; align-items: center; justify-content: space-between;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 0.9rem; font-weight: 700; color: #fff;">🔑 Mã Base64 Xuất Bản Cho Game (Auto Merge Code)</span>
+        <span style="font-size: 0.7rem; color: #10b981; background: rgba(16, 185, 129, 0.15); padding: 2px 8px; border-radius: 4px; font-weight: 700;">Chuẩn 100% toantth</span>
+      </div>
+      <span style="font-size: 0.75rem; color: var(--text-dim);">Tự động cập nhật theo thời gian thực</span>
+    </div>
+
+    <div class="export-row">
+      <input type="text" id="codeOutput" class="code-output" readonly spellcheck="false" placeholder="Mã công thức Base64 sẽ hiển thị ở đây..."/>
+      <button id="btnCopyCodeBottom" class="btn btn-primary" onclick="copyCodeToClipboard()">
+        <span>📋 Sao Chép</span>
+      </button>
+    </div>
+  </footer>
+
+  <!-- Modal Nhập Mã Công Thức -->
+  <div id="importModal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">📥 Nhập Mã Công Thức Ghép Đá</span>
+        <button id="btnImportClose" class="modal-close">✕</button>
+      </div>
+
+      <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.4;">
+        Dán chuỗi mã Base64 được tạo từ công cụ này hoặc từ trang <code>toantth.github.io/ghep-da</code> vào đây để khôi phục công thức:
+      </p>
+
+      <textarea id="importTextarea" class="modal-textarea" placeholder="Dán mã Base64 vào đây..."></textarea>
+
+      <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeImportModal()">Hủy Bỏ</button>
+        <button id="btnImportSubmit" class="btn btn-success">Nạp Công Thức</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
