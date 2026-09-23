@@ -663,15 +663,62 @@ static void* GetMergeIngredientMethod(void* pbKlass) {
     if (s_targetMergeMI) return s_targetMergeMI;
     if (!pbKlass) pbKlass = ScanFindClass("", "PlayerBehavior");
     if (pbKlass) {
-        s_targetMergeMI = FindMethodInHierarchy(pbKlass, "RequestMergeIngredient", 2);
+        // CmdMergeIngredient directly transmits the Mirror [Command] RPC packet to the server
+        s_targetMergeMI = FindMethodInHierarchy(pbKlass, "CmdMergeIngredient", 2);
         if (!s_targetMergeMI)
-            s_targetMergeMI = FindMethodInHierarchy(pbKlass, "RequesAutoMergeIngredient", 2);
-        if (!s_targetMergeMI)
-            s_targetMergeMI = FindMethodInHierarchy(pbKlass, "CmdMergeIngredient", 2);
+            s_targetMergeMI = FindMethodInHierarchy(pbKlass, "RequestMergeIngredient", 2);
         if (!s_targetMergeMI)
             s_targetMergeMI = FindMethodInHierarchy(pbKlass, "CmdAutoMergeIngredient", 2);
+        if (!s_targetMergeMI)
+            s_targetMergeMI = FindMethodInHierarchy(pbKlass, "RequesAutoMergeIngredient", 2);
     }
     return s_targetMergeMI;
+}
+
+static bool InvokeMergeIngredient(void* playerObj, void* listObj, int32_t apiToken) {
+    if (!playerObj || !listObj) return false;
+    static void* pbKlass = nullptr;
+    if (!pbKlass) pbKlass = ScanFindClass("", "PlayerBehavior");
+    if (!pbKlass) return false;
+
+    static void* s_cmdMergeMI = nullptr;
+    static void* s_reqMergeMI = nullptr;
+    static void* s_cmdAutoMI  = nullptr;
+    static void* s_reqAutoMI  = nullptr;
+    static bool s_resolved = false;
+    if (!s_resolved) {
+        s_cmdMergeMI = FindMethodInHierarchy(pbKlass, "CmdMergeIngredient", 2);
+        s_reqMergeMI = FindMethodInHierarchy(pbKlass, "RequestMergeIngredient", 2);
+        s_cmdAutoMI  = FindMethodInHierarchy(pbKlass, "CmdAutoMergeIngredient", 2);
+        s_reqAutoMI  = FindMethodInHierarchy(pbKlass, "RequesAutoMergeIngredient", 2);
+        s_resolved = true;
+    }
+
+    void* params[2] = { listObj, &apiToken };
+    bool sent = false;
+
+    // 1. Direct Mirror Command RPC transmission to server
+    if (s_cmdMergeMI) {
+        SafeInvoke(s_cmdMergeMI, playerObj, params);
+        sent = true;
+    }
+    // 2. Also trigger client-side method
+    if (s_reqMergeMI) {
+        SafeInvoke(s_reqMergeMI, playerObj, params);
+        sent = true;
+    }
+    // 3. Fallbacks if neither CmdMerge nor RequestMerge existed
+    if (!sent) {
+        if (s_cmdAutoMI) {
+            SafeInvoke(s_cmdAutoMI, playerObj, params);
+            sent = true;
+        }
+        if (s_reqAutoMI) {
+            SafeInvoke(s_reqAutoMI, playerObj, params);
+            sent = true;
+        }
+    }
+    return sent;
 }
 
 static void* CreateIl2CppStringList(const std::vector<void*>& stringIds, void* playerObj, void* methodInfo) {
@@ -1810,8 +1857,8 @@ static void TickCheats() {
             Vector3 firePos;
             float fireDist = 999999.0f;
             if (GetClosestFireCraftPosition(playerPos, &firePos, &fireDist)) {
-                // If campfire is found on map, allow merge if within 5.0m or already flagged at fire
-                if (fireDist > 5.0f && !g_isAtFireForRecipe) {
+                // If campfire is found on map, only merge when arrived at campfire or within 4.5m
+                if (!g_isAtFireForRecipe && fireDist > 4.5f) {
                     canMergeAtLocation = false;
                 }
             }
@@ -1830,11 +1877,12 @@ static void TickCheats() {
                         void* listObj = CreateIl2CppStringList(matchedIds, playerObj, mergeMI);
                         if (listObj) {
                             int32_t apiToken = *(int32_t*)((uint8_t*)playerObj + 0x29c);
-                            void* params[2] = { listObj, &apiToken };
-                            SafeInvoke(mergeMI, playerObj, params);
-                            recipeMergedThisTick = true;
-                            NSLog(@"[THTweak] Successfully sent merge request with %lu stones!", (unsigned long)matchedIds.size());
-                            if (g_window) [g_window setStatusText:[NSString stringWithFormat:@"Đã gửi ghép %lu viên đá!", (unsigned long)matchedIds.size()]];
+                            bool sent = InvokeMergeIngredient(playerObj, listObj, apiToken);
+                            if (sent) {
+                                recipeMergedThisTick = true;
+                                NSLog(@"[THTweak] Successfully sent merge request with %lu stones!", (unsigned long)matchedIds.size());
+                                if (g_window) [g_window setStatusText:[NSString stringWithFormat:@"Đã gửi ghép %lu viên đá!", (unsigned long)matchedIds.size()]];
+                            }
                         } else {
                             NSLog(@"[THTweak] ERROR: Could not create List<string> for merge!");
                             if (g_window) [g_window setStatusText:@"Lỗi: Không tạo được danh sách đá!"];
@@ -1909,8 +1957,7 @@ static void TickCheats() {
                                 void* mergeList = CreateIl2CppStringList(trio, playerObj, mergeMI);
                                 if (mergeList) {
                                     int32_t apiToken = *(int32_t*)((uint8_t*)playerObj + 0x29c);
-                                    void* params[2] = { mergeList, &apiToken };
-                                    SafeInvoke(mergeMI, playerObj, params);
+                                    InvokeMergeIngredient(playerObj, mergeList, apiToken);
                                 }
                             }
                         }
@@ -1980,10 +2027,12 @@ static void TickCheats() {
                 closestDist = fireDist;
                 isTargetMob = false;
                 g_currentTargetObj = nullptr;
-                if (fireDist > 3.2f) {
+                if (fireDist > 3.8f) {
                     g_isGoingToFire = true;
+                    g_isAtFireForRecipe = false;
                     s_campfireArriveTime = 0;
                 } else {
+                    g_isGoingToFire = false;
                     g_isAtFireForRecipe = true;
                     if (s_campfireArriveTime == 0) s_campfireArriveTime = nowTickTime;
                 }
@@ -3231,10 +3280,10 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
             g_lastTargetPos = g_cachedTargetPos;
         }
 
-        float stopDist = g_cachedTargetIsMob ? 1.0f : (g_isGoingToFire ? 2.8f : (g_isReturningToFarm ? 1.0f : (isCampfireNav ? 2.8f : fmaxf(g_digStopDist, 0.40f))));
+        float stopDist = g_cachedTargetIsMob ? 1.0f : (g_isGoingToFire ? 3.5f : (g_isReturningToFarm ? 1.0f : (isCampfireNav ? 3.5f : fmaxf(g_digStopDist, 0.40f))));
 
         if (g_isAtTarget) {
-            float leaveDist = g_cachedTargetIsMob ? 1.4f : (g_isGoingToFire ? 4.0f : (g_isReturningToFarm ? 1.4f : (isCampfireNav ? 4.0f : 1.10f)));
+            float leaveDist = g_cachedTargetIsMob ? 1.4f : (g_isGoingToFire ? 4.2f : (g_isReturningToFarm ? 1.4f : (isCampfireNav ? 4.2f : 1.10f)));
             if (checkDist > leaveDist && !g_isAtFireForRecipe) {
                 g_isAtTarget = false;
             }
