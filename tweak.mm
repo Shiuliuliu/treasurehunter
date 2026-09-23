@@ -799,33 +799,97 @@ static bool GetClosestFireCraftPosition(Vector3 playerPos, Vector3* outClosestFi
         }
     }
 
-    // Fallback: NavigationManager
-    static void* navManagerKlass = nullptr;
-    static void* navInstanceField = nullptr;
-    if (!navManagerKlass) navManagerKlass = ScanFindClass("", "NavigationManager");
-    if (navManagerKlass && !navInstanceField)
-        navInstanceField = IL2CPP::il2cpp_class_get_field_from_name(navManagerKlass, "Instance");
+    // 2. Scan scene MapObject with MapType::FireCraft (mapType == 4)
+    static void* mapObjectKlass = nullptr;
+    static void* compKlass = nullptr;
+    static void* getTransformMI = nullptr;
+    static void* transformKlass = nullptr;
+    static void* getPositionMI = nullptr;
+    if (!mapObjectKlass) mapObjectKlass = ScanFindClass("", "MapObject");
+    if (!compKlass) compKlass = ScanFindClass("UnityEngine", "Component");
+    if (compKlass && !getTransformMI) getTransformMI = FindMethodInHierarchy(compKlass, "get_transform", 0);
+    if (!transformKlass) transformKlass = ScanFindClass("UnityEngine", "Transform");
+    if (transformKlass && !getPositionMI) getPositionMI = FindMethodInHierarchy(transformKlass, "get_position", 0);
 
-    void* navInstance = nullptr;
-    if (navInstanceField && IL2CPP::il2cpp_field_static_get_value) {
-        IL2CPP::il2cpp_field_static_get_value(navInstanceField, &navInstance);
-    }
-    if (navInstance && IsValidUnityObj(navInstance)) {
-        static void* goToFireCraftMI = nullptr;
-        if (!goToFireCraftMI) goToFireCraftMI = FindMethodInHierarchy(navManagerKlass, "GoToFireCraft", 1);
-        if (goToFireCraftMI) {
-            void* emptyStr = IL2CPP::il2cpp_string_new("");
-            void* params[1] = { emptyStr };
-            SafeInvoke(goToFireCraftMI, navInstance, params);
-            Vector3 navTarget = *(Vector3*)((uint8_t*)navInstance + 0x20);
-            float dx = navTarget.x - playerPos.x;
-            float dy = navTarget.y - playerPos.y;
-            float dist = sqrtf(dx * dx + dy * dy);
-            if (dist > 0.01f && dist < 10000.0f) {
-                *outClosestFire = navTarget;
-                if (outDist) *outDist = dist;
+    if (mapObjectKlass && getTransformMI && getPositionMI) {
+        int32_t mapCount = 0;
+        void* mapArr = Il2cppFindObjects(mapObjectKlass, &mapCount);
+        if (mapArr && mapCount > 0) {
+            float bestDist = 999999.0f;
+            Vector3 bestPos = {0,0,0};
+            bool found = false;
+            for (int i = 0; i < mapCount; i++) {
+                void* mapObj = GetArrElem(mapArr, i);
+                if (!mapObj || !IsValidUnityObj(mapObj)) continue;
+                void* mapData = *(void**)((uint8_t*)mapObj + 0x20);
+                if (!mapData) continue;
+                int32_t mType = *(int32_t*)((uint8_t*)mapData + 0x18); // MapData.mapType
+                if (mType == 4) { // MapType::FireCraft
+                    void* trans = SafeInvoke(getTransformMI, mapObj, nullptr);
+                    if (!trans) continue;
+                    void* boxed = SafeInvoke(getPositionMI, trans, nullptr);
+                    if (!boxed) continue;
+                    Vector3 pos = *(Vector3*)((uint8_t*)boxed + 16);
+                    float dx = pos.x - playerPos.x;
+                    float dy = pos.y - playerPos.y;
+                    float dist = sqrtf(dx * dx + dy * dy);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        bestPos = pos;
+                        found = true;
+                    }
+                }
+            }
+            if (found) {
+                *outClosestFire = bestPos;
+                if (outDist) *outDist = bestDist;
                 return true;
             }
+        }
+    }
+
+    // 3. Fallback: NavigationManager (query at most once every 5 seconds to avoid spamming GoToFireCraft)
+    static double lastNavFetchTime = 0;
+    static Vector3 cachedNavTarget = {0,0,0};
+    static bool hasCachedNavTarget = false;
+    double nowNavTime = [[NSProcessInfo processInfo] systemUptime];
+
+    if (!hasCachedNavTarget || nowNavTime - lastNavFetchTime > 5.0) {
+        lastNavFetchTime = nowNavTime;
+        static void* navManagerKlass = nullptr;
+        static void* navInstanceField = nullptr;
+        if (!navManagerKlass) navManagerKlass = ScanFindClass("", "NavigationManager");
+        if (navManagerKlass && !navInstanceField)
+            navInstanceField = IL2CPP::il2cpp_class_get_field_from_name(navManagerKlass, "Instance");
+
+        void* navInstance = nullptr;
+        if (navInstanceField && IL2CPP::il2cpp_field_static_get_value) {
+            IL2CPP::il2cpp_field_static_get_value(navInstanceField, &navInstance);
+        }
+        if (navInstance && IsValidUnityObj(navInstance)) {
+            static void* goToFireCraftMI = nullptr;
+            if (!goToFireCraftMI) goToFireCraftMI = FindMethodInHierarchy(navManagerKlass, "GoToFireCraft", 1);
+            if (goToFireCraftMI) {
+                void* emptyStr = IL2CPP::il2cpp_string_new("");
+                void* params[1] = { emptyStr };
+                SafeInvoke(goToFireCraftMI, navInstance, params);
+                Vector3 navTarget = *(Vector3*)((uint8_t*)navInstance + 0x20);
+                if (fabsf(navTarget.x) > 0.01f || fabsf(navTarget.y) > 0.01f) {
+                    cachedNavTarget = navTarget;
+                    hasCachedNavTarget = true;
+                }
+            }
+        }
+    }
+
+    if (hasCachedNavTarget) {
+        float dx = cachedNavTarget.x - playerPos.x;
+        float dy = cachedNavTarget.y - playerPos.y;
+        float dist = sqrtf(dx * dx + dy * dy);
+        if (dist < 10000.0f) {
+            *outClosestFire = cachedNavTarget;
+            if (outDist) *outDist = dist;
+            return true;
         }
     }
 
@@ -1547,6 +1611,8 @@ static void TickCheats() {
                 g_hasDeathPos = true;
                 g_hasFarmPosBeforeFire = false;
                 g_isReturningToFarm = false;
+                g_isGoingToFire = false;
+                g_isAtFireForRecipe = false;
             }
         } else {
             if (g_wasDead) {
@@ -1734,13 +1800,18 @@ static void TickCheats() {
 
     // Recipe Auto Merge Ingredients (Tự động ghép đá theo công thức)
     bool recipeMergedThisTick = false;
+    static double s_campfireArriveTime = 0;
+    static double s_campfireRetryCooldown = 0;
+    double nowTickTime = [[NSProcessInfo processInfo] systemUptime];
+
     if (g_recipeMergeEnabled && g_currentRecipe.valid && playerObj) {
         bool canMergeAtLocation = true;
         if (g_recipeMergeGoToFire) {
             Vector3 firePos;
             float fireDist = 999999.0f;
             if (GetClosestFireCraftPosition(playerPos, &firePos, &fireDist)) {
-                if (fireDist > 3.0f) {
+                // If campfire is found on map, allow merge if within 5.0m or already flagged at fire
+                if (fireDist > 5.0f && !g_isAtFireForRecipe) {
                     canMergeAtLocation = false;
                 }
             }
@@ -1748,7 +1819,7 @@ static void TickCheats() {
 
         if (canMergeAtLocation) {
             static double lastRecipeMergeTime = 0;
-            double nowRecipeMergeTime = [[NSProcessInfo processInfo] systemUptime];
+            double nowRecipeMergeTime = nowTickTime;
             if (nowRecipeMergeTime - lastRecipeMergeTime >= 1.5) {
                 lastRecipeMergeTime = nowRecipeMergeTime;
                 std::vector<void*> matchedIds;
@@ -1876,9 +1947,21 @@ static void TickCheats() {
     g_isReturningToFarm = false;
     if (!g_recipeMergeEnabled || !g_recipeMergeGoToFire || !g_currentRecipe.valid) {
         g_hasFarmPosBeforeFire = false;
+        s_campfireArriveTime = 0;
     }
     if (!hasTarget && g_recipeMergeEnabled && g_recipeMergeGoToFire && g_currentRecipe.valid && playerObj) {
-        if (CheckIfRecipeFormulaReady(playerObj, nullptr)) {
+        bool formulaReady = CheckIfRecipeFormulaReady(playerObj, nullptr);
+
+        // Safety timeout: if standing at campfire for > 8s and stones are still not consumed, force return to farm
+        bool timedOutAtFire = false;
+        if (s_campfireArriveTime > 0 && (nowTickTime - s_campfireArriveTime > 8.0)) {
+            timedOutAtFire = true;
+            s_campfireRetryCooldown = nowTickTime + 15.0; // Wait 15s before attempting campfire again
+            s_campfireArriveTime = 0;
+            NSLog(@"[THTweak] WARNING: Campfire merge timed out after 8s! Returning to farm...");
+        }
+
+        if (formulaReady && !timedOutAtFire && nowTickTime > s_campfireRetryCooldown) {
             Vector3 closestFirePos;
             float fireDist = 999999.0f;
             if (GetClosestFireCraftPosition(playerPos, &closestFirePos, &fireDist)) {
@@ -1887,7 +1970,7 @@ static void TickCheats() {
                     if (g_lockDigPos && g_hasLockedPos) {
                         g_farmPosBeforeFire = g_lockedDigPos;
                         g_hasFarmPosBeforeFire = true;
-                    } else if (fireDist > 3.0f) {
+                    } else if (fireDist > 4.0f) {
                         g_farmPosBeforeFire = playerPos;
                         g_hasFarmPosBeforeFire = true;
                     }
@@ -1897,14 +1980,17 @@ static void TickCheats() {
                 closestDist = fireDist;
                 isTargetMob = false;
                 g_currentTargetObj = nullptr;
-                if (fireDist > 2.2f) {
+                if (fireDist > 3.2f) {
                     g_isGoingToFire = true;
+                    s_campfireArriveTime = 0;
                 } else {
                     g_isAtFireForRecipe = true;
+                    if (s_campfireArriveTime == 0) s_campfireArriveTime = nowTickTime;
                 }
             }
         } else {
-            // Recipe formula is NOT ready (crafting completed or ingredients exhausted):
+            // Recipe formula is NOT ready (crafting completed or ingredients exhausted or timed out):
+            s_campfireArriveTime = 0;
             // Return back to the original farm position!
             Vector3 returnTarget = {0,0,0};
             bool shouldReturn = false;
@@ -3145,21 +3231,21 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
             g_lastTargetPos = g_cachedTargetPos;
         }
 
-        float stopDist = g_cachedTargetIsMob ? 1.0f : (g_isGoingToFire ? 1.8f : (g_isReturningToFarm ? 1.0f : (isCampfireNav ? 1.8f : fmaxf(g_digStopDist, 0.40f))));
+        float stopDist = g_cachedTargetIsMob ? 1.0f : (g_isGoingToFire ? 2.8f : (g_isReturningToFarm ? 1.0f : (isCampfireNav ? 2.8f : fmaxf(g_digStopDist, 0.40f))));
 
         if (g_isAtTarget) {
-            float leaveDist = g_cachedTargetIsMob ? 1.4f : (g_isGoingToFire ? 2.5f : (g_isReturningToFarm ? 1.4f : (isCampfireNav ? 2.5f : 1.10f)));
-            if (checkDist > leaveDist) {
+            float leaveDist = g_cachedTargetIsMob ? 1.4f : (g_isGoingToFire ? 4.0f : (g_isReturningToFarm ? 1.4f : (isCampfireNav ? 4.0f : 1.10f)));
+            if (checkDist > leaveDist && !g_isAtFireForRecipe) {
                 g_isAtTarget = false;
             }
         } else {
-            if (checkDist <= stopDist) {
+            if (checkDist <= stopDist || g_isAtFireForRecipe) {
                 g_isAtTarget = true;
                 g_targetStartTime = [[NSProcessInfo processInfo] systemUptime];
             }
         }
 
-        if (!g_isAtTarget) {
+        if (!g_isAtTarget && !g_isAtFireForRecipe) {
             moveX = dirX;
             moveY = dirY;
             shouldMove = true;
@@ -3353,8 +3439,14 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
 
     // Status update
     if (g_window) {
-        if (g_hasCachedTarget && (g_autoDig || g_autoAttackMobs || isCampfireNav)) {
-            NSString *tName = g_cachedTargetIsMob ? @"Quái vật" : (g_isReturningToFarm ? @"Về bãi farm" : (isCampfireNav ? @"Trại lửa" : @"Khối đất"));
+        if (g_isAtFireForRecipe) {
+            [g_window setStatusText:@"Đang ở trại lửa - Đang ghép đá..."];
+        } else if (g_isReturningToFarm) {
+            [g_window setStatusText:[NSString stringWithFormat:@"Về bãi farm | %.1fm", g_cachedClosestDist]];
+        } else if (g_isGoingToFire) {
+            [g_window setStatusText:[NSString stringWithFormat:@"Đến trại lửa | %.1fm", g_cachedClosestDist]];
+        } else if (g_hasCachedTarget && (g_autoDig || g_autoAttackMobs)) {
+            NSString *tName = g_cachedTargetIsMob ? @"Quái vật" : @"Khối đất";
             [g_window setStatusText:[NSString stringWithFormat:@"Bám: %@ | %.1fm", tName, g_cachedClosestDist]];
         } else if (g_autoDig || g_autoAttackMobs || isCampfireNav) {
             [g_window setStatusText:@"Không tìm thấy mục tiêu!"];
