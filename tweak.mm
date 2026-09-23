@@ -816,6 +816,7 @@ static bool GetClosestVillagePosition(Vector3 playerPos, Vector3* outClosestVill
                 if (arr && size > 0 && size < 500) {
                     for (int i = 0; i < size; i++) {
                         Vector3* pPos = (Vector3*)((uint8_t*)arr + 0x20 + i * sizeof(Vector3));
+                        if (fabsf(pPos->x) < 1.0f && fabsf(pPos->y) < 1.0f) continue;
                         float dx = pPos->x - playerPos.x;
                         float dy = pPos->y - playerPos.y;
                         float dist = sqrtf(dx * dx + dy * dy);
@@ -829,67 +830,14 @@ static bool GetClosestVillagePosition(Vector3 playerPos, Vector3* outClosestVill
             }
         }
 
-        if (found) {
+        if (found && (fabsf(bestPos.x) > 1.0f || fabsf(bestPos.y) > 1.0f) && bestDist < 2000.0f) {
             *outClosestVillage = bestPos;
             if (outDist) *outDist = bestDist;
             return true;
         }
     }
 
-    // 2. Query NavigationManager for Merge NPC (NpcType::Merge = 7)
-    static void* navManagerKlass = nullptr;
-    static void* navInstanceField = nullptr;
-    static void* goNPCMethod = nullptr;
-    static void* stopMethod = nullptr;
-    static bool navResolved = false;
-
-    if (!navResolved) {
-        navManagerKlass = ScanFindClass("", "NavigationManager");
-        if (navManagerKlass) {
-            navInstanceField = IL2CPP::il2cpp_class_get_field_from_name(navManagerKlass, "Instance");
-            goNPCMethod = FindMethodInHierarchy(navManagerKlass, "GoNPC", 2);
-            stopMethod = FindMethodInHierarchy(navManagerKlass, "Stop", 0);
-        }
-        navResolved = true;
-    }
-
-    if (navInstanceField && goNPCMethod && IL2CPP::il2cpp_field_static_get_value) {
-        void* navInstance = nullptr;
-        IL2CPP::il2cpp_field_static_get_value(navInstanceField, &navInstance);
-        if (navInstance && IsValidUnityObj(navInstance)) {
-            static double s_lastNpcQueryTime = 0;
-            static Vector3 s_cachedNpcPos = {0,0,0};
-            static bool s_hasCachedNpcPos = false;
-            double nowTime = [[NSProcessInfo processInfo] systemUptime];
-
-            if (!s_hasCachedNpcPos || (nowTime - s_lastNpcQueryTime > 5.0)) {
-                s_lastNpcQueryTime = nowTime;
-                int32_t npcType = 7; // NpcType::Merge
-                void* tokenStr = IL2CPP::il2cpp_string_new ? IL2CPP::il2cpp_string_new("") : nullptr;
-                void* params[2] = { &npcType, tokenStr };
-                SafeInvoke(goNPCMethod, navInstance, params);
-
-                Vector3 targetPos = *(Vector3*)((uint8_t*)navInstance + 0x20); // targetPosition
-                if (stopMethod) SafeInvoke(stopMethod, navInstance, nullptr);
-
-                if (fabsf(targetPos.x) > 0.01f || fabsf(targetPos.y) > 0.01f) {
-                    s_cachedNpcPos = targetPos;
-                    s_hasCachedNpcPos = true;
-                }
-            }
-
-            if (s_hasCachedNpcPos) {
-                float dx = s_cachedNpcPos.x - playerPos.x;
-                float dy = s_cachedNpcPos.y - playerPos.y;
-                float dist = sqrtf(dx * dx + dy * dy);
-                *outClosestVillage = s_cachedNpcPos;
-                if (outDist) *outDist = dist;
-                return true;
-            }
-        }
-    }
-
-    // 3. Fallback: Scan scene MapObject with Village types
+    // 2. Fallback: Scan scene MapObject with Village types
     static void* mapObjectKlass = nullptr;
     static void* compKlass = nullptr;
     static void* getTransformMI = nullptr;
@@ -920,6 +868,7 @@ static bool GetClosestVillagePosition(Vector3 playerPos, Vector3* outClosestVill
                     void* boxed = SafeInvoke(getPositionMI, trans, nullptr);
                     if (!boxed) continue;
                     Vector3 pos = *(Vector3*)((uint8_t*)boxed + 16);
+                    if (fabsf(pos.x) < 1.0f && fabsf(pos.y) < 1.0f) continue;
                     float dx = pos.x - playerPos.x;
                     float dy = pos.y - playerPos.y;
                     float dist = sqrtf(dx * dx + dy * dy);
@@ -930,7 +879,7 @@ static bool GetClosestVillagePosition(Vector3 playerPos, Vector3* outClosestVill
                     }
                 }
             }
-            if (found) {
+            if (found && (fabsf(bestPos.x) > 1.0f || fabsf(bestPos.y) > 1.0f) && bestDist < 2000.0f) {
                 *outClosestVillage = bestPos;
                 if (outDist) *outDist = bestDist;
                 return true;
@@ -1484,18 +1433,22 @@ static void HardStopJoystick(void* playerMovement, Vector3 playerPos) {
         }
     }
     void* joy = GetJoystickObject();
-    if (joy) {
+    if (joy && IsValidUnityObj(joy)) {
+        *(Vector2*)((uint8_t*)joy + 0x58) = {0.0f, 0.0f};
+        static void* resetHandleMI = nullptr;
         static void* setJoystickValuesMI = nullptr;
         static void* joystickKlass = nullptr;
         if (!joystickKlass) joystickKlass = ScanFindClass("", "Joystick");
-        if (joystickKlass && !setJoystickValuesMI)
-            setJoystickValuesMI = FindMethodInHierarchy(joystickKlass, "SetJoystickValues", 1);
-        if (setJoystickValuesMI) {
+        if (joystickKlass) {
+            if (!resetHandleMI) resetHandleMI = FindMethodInHierarchy(joystickKlass, "ResetHandleAnchoredPosition", 0);
+            if (!setJoystickValuesMI) setJoystickValuesMI = FindMethodInHierarchy(joystickKlass, "SetJoystickValues", 1);
+        }
+        if (resetHandleMI) {
+            SafeInvoke(resetHandleMI, joy, nullptr);
+        } else if (setJoystickValuesMI) {
             Vector2 zero = {0.0f, 0.0f};
             void* params[1] = { &zero };
             SafeInvoke(setJoystickValuesMI, joy, params);
-        } else {
-            *(Vector2*)((uint8_t*)joy + 0x58) = {0.0f, 0.0f};
         }
     }
 }
@@ -1511,11 +1464,25 @@ static void DisableAllAutoByPlayerMove() {
     g_isReturningToFarm = false;
     g_hasFarmPosBeforeVillage = false;
 
-    // Immediately stop any automated joystick/movement forces
+    // Immediately stop auto movement forces on PlayerMovement
     void* pm = GetLocalPlayerMovement();
     if (pm) {
-        Vector3 playerPos = g_cachedPlayerPos;
-        HardStopJoystick(pm, playerPos);
+        static void* setExternalInputMI = nullptr;
+        static void* stopInputMI = nullptr;
+        static void* pmKlass = nullptr;
+        if (!pmKlass) pmKlass = ScanFindClass("", "AuthorativePlayerMovement");
+        if (pmKlass) {
+            if (!setExternalInputMI) setExternalInputMI = FindMethodInHierarchy(pmKlass, "SetExternalInput", 1);
+            if (!stopInputMI) stopInputMI = FindMethodInHierarchy(pmKlass, "StopInput", 0);
+        }
+        if (setExternalInputMI) {
+            Vector2 zero = { 0.0f, 0.0f };
+            void* params[1] = { &zero };
+            SafeInvoke(setExternalInputMI, pm, params);
+        }
+        if (stopInputMI) {
+            SafeInvoke(stopInputMI, pm, nullptr);
+        }
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1525,62 +1492,6 @@ static void DisableAllAutoByPlayerMove() {
         }
     });
     NSLog(@"[THTweak] Player moved joystick manually -> Auto disabled completely!");
-}
-
-static void (*orig_Joystick_OnPointerDown)(void* thisObj, void* eventData, void* methodInfo) = nullptr;
-static void new_Joystick_OnPointerDown(void* thisObj, void* eventData, void* methodInfo) {
-    DisableAllAutoByPlayerMove();
-    if (orig_Joystick_OnPointerDown) orig_Joystick_OnPointerDown(thisObj, eventData, methodInfo);
-}
-
-static void (*orig_Joystick_OnDrag)(void* thisObj, void* eventData, void* methodInfo) = nullptr;
-static void new_Joystick_OnDrag(void* thisObj, void* eventData, void* methodInfo) {
-    DisableAllAutoByPlayerMove();
-    if (orig_Joystick_OnDrag) orig_Joystick_OnDrag(thisObj, eventData, methodInfo);
-}
-
-static void (*orig_DynamicJoystick_OnPointerDown)(void* thisObj, void* eventData, void* methodInfo) = nullptr;
-static void new_DynamicJoystick_OnPointerDown(void* thisObj, void* eventData, void* methodInfo) {
-    DisableAllAutoByPlayerMove();
-    if (orig_DynamicJoystick_OnPointerDown) orig_DynamicJoystick_OnPointerDown(thisObj, eventData, methodInfo);
-}
-
-static void (*orig_FloatingJoystick_OnPointerDown)(void* thisObj, void* eventData, void* methodInfo) = nullptr;
-static void new_FloatingJoystick_OnPointerDown(void* thisObj, void* eventData, void* methodInfo) {
-    DisableAllAutoByPlayerMove();
-    if (orig_FloatingJoystick_OnPointerDown) orig_FloatingJoystick_OnPointerDown(thisObj, eventData, methodInfo);
-}
-
-static void EnsureJoystickHooks() {
-    static bool s_joyHooked = false;
-    if (s_joyHooked) return;
-    void* joystickKlass = ScanFindClass("", "Joystick");
-    if (joystickKlass) {
-        void* onPointerDown_mi = FindMethodInHierarchy(joystickKlass, "OnPointerDown", 1);
-        if (onPointerDown_mi) {
-            HookIl2CppMethod(onPointerDown_mi, (void*)&new_Joystick_OnPointerDown, (void**)&orig_Joystick_OnPointerDown);
-        }
-        void* onDrag_mi = FindMethodInHierarchy(joystickKlass, "OnDrag", 1);
-        if (onDrag_mi) {
-            HookIl2CppMethod(onDrag_mi, (void*)&new_Joystick_OnDrag, (void**)&orig_Joystick_OnDrag);
-        }
-        s_joyHooked = true;
-        NSLog(@"[THTweak] Hooked Joystick OnPointerDown and OnDrag successfully");
-    }
-    void* dynamicJoystickKlass = ScanFindClass("", "DynamicJoystick");
-    if (dynamicJoystickKlass) {
-        void* dynPointerDown_mi = FindMethodInHierarchy(dynamicJoystickKlass, "OnPointerDown", 1);
-        if (dynPointerDown_mi) {
-            HookIl2CppMethod(dynPointerDown_mi, (void*)&new_DynamicJoystick_OnPointerDown, (void**)&orig_DynamicJoystick_OnPointerDown);
-        }
-    }
-    void* floatingJoystickKlass = ScanFindClass("", "FloatingJoystick");
-    if (floatingJoystickKlass) {
-        void* floatPointerDown_mi = FindMethodInHierarchy(floatingJoystickKlass, "OnPointerDown", 1);
-        if (floatPointerDown_mi) {
-            HookIl2CppMethod(floatPointerDown_mi, (void*)&new_FloatingJoystick_OnPointerDown, (void**)&orig_FloatingJoystick_OnPointerDown);
-        }
-    }
 }
 
 static void ScanEquipmentList(void* listObj, int32_t eqType, int32_t rareType, int32_t level, bool &shouldEquip) {
@@ -1611,7 +1522,6 @@ static void TickCheats() {
     if (g_window) [g_window attachWindowSceneIfNeeded];
     if (!s_attached) return;
     EnsureAdHooks();
-    EnsureJoystickHooks();
 
     static int s_cacheResetTicks = 0;
     if (++s_cacheResetTicks > 10) {
@@ -2113,6 +2023,11 @@ static void TickCheats() {
                     g_isAtVillageForRecipe = true;
                     if (s_villageArriveTime == 0) s_villageArriveTime = nowTickTime;
                 }
+            } else {
+                // If village coordinates cannot be found on this map, merge on the spot!
+                g_isGoingToVillage = false;
+                g_isAtVillageForRecipe = true;
+                if (s_villageArriveTime == 0) s_villageArriveTime = nowTickTime;
             }
         } else {
             // Recipe formula is NOT ready (crafting completed or ingredients exhausted or timed out):
@@ -2128,18 +2043,23 @@ static void TickCheats() {
                 shouldReturn = true;
             }
             if (shouldReturn) {
-                float dx = returnTarget.x - playerPos.x;
-                float dy = returnTarget.y - playerPos.y;
-                float retDist = sqrtf(dx * dx + dy * dy);
-                if (retDist > 1.2f) {
-                    targetPos = returnTarget;
-                    hasTarget = true;
-                    closestDist = retDist;
-                    isTargetMob = false;
-                    g_currentTargetObj = nullptr;
-                    g_isReturningToFarm = true;
+                if (fabsf(returnTarget.x) > 1.0f || fabsf(returnTarget.y) > 1.0f) {
+                    float dx = returnTarget.x - playerPos.x;
+                    float dy = returnTarget.y - playerPos.y;
+                    float retDist = sqrtf(dx * dx + dy * dy);
+                    if (retDist > 1.2f) {
+                        targetPos = returnTarget;
+                        hasTarget = true;
+                        closestDist = retDist;
+                        isTargetMob = false;
+                        g_currentTargetObj = nullptr;
+                        g_isReturningToFarm = true;
+                    } else {
+                        // Arrived back at the original farming spot!
+                        g_hasFarmPosBeforeVillage = false;
+                        g_isReturningToFarm = false;
+                    }
                 } else {
-                    // Arrived back at the original farming spot!
                     g_hasFarmPosBeforeVillage = false;
                     g_isReturningToFarm = false;
                 }
@@ -3289,28 +3209,90 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
         _lblFpsBadge.hidden = YES;
     }
 
+    static bool s_wasMasterOn = true;
     if (!g_menuMasterSwitch) {
-        void* playerMovement = GetLocalPlayerMovement();
-        if (playerMovement) {
-            static void* setExternalInputMI = nullptr;
-            static void* pmKlass = nullptr;
-            if (!pmKlass) pmKlass = ScanFindClass("", "AuthorativePlayerMovement");
-            if (pmKlass && !setExternalInputMI) setExternalInputMI = FindMethodInHierarchy(pmKlass, "SetExternalInput", 1);
-            if (setExternalInputMI) {
-                Vector2 zero = { 0.0f, 0.0f };
-                void* params[1] = { &zero };
-                SafeInvoke(setExternalInputMI, playerMovement, params);
-            }
+        if (s_wasMasterOn) {
+            void* playerMovement = GetLocalPlayerMovement();
+            HardStopJoystick(playerMovement, g_cachedPlayerPos);
+            s_wasMasterOn = false;
         }
         _lblEspText.hidden = YES;
         if (g_window) [g_window setStatusText:@"Hệ thống Auto: Tắt"];
         return;
     }
+    s_wasMasterOn = true;
 
     void* playerMovement = GetLocalPlayerMovement();
     if (!playerMovement) return;
     void* playerObj = *(void**)((uint8_t*)playerMovement + 0xa8);
     if (!playerObj) return;
+
+    // Real-time detection of manual player joystick movement
+    static void* inputKlass = nullptr;
+    static void* getTouchCountMI = nullptr;
+    static void* getMouseButtonMI = nullptr;
+    static void* getMousePositionMI = nullptr;
+    static void* screenKlass = nullptr;
+    static void* getWidthMI = nullptr;
+    static void* getHeightMI = nullptr;
+    static bool s_inputResolved = false;
+
+    if (!s_inputResolved) {
+        inputKlass = ScanFindClass("UnityEngine", "Input");
+        if (inputKlass) {
+            getTouchCountMI = FindMethodInHierarchy(inputKlass, "get_touchCount", 0);
+            getMouseButtonMI = FindMethodInHierarchy(inputKlass, "GetMouseButton", 1);
+            getMousePositionMI = FindMethodInHierarchy(inputKlass, "get_mousePosition", 0);
+        }
+        screenKlass = ScanFindClass("UnityEngine", "Screen");
+        if (screenKlass) {
+            getWidthMI = FindMethodInHierarchy(screenKlass, "get_width", 0);
+            getHeightMI = FindMethodInHierarchy(screenKlass, "get_height", 0);
+        }
+        s_inputResolved = true;
+    }
+
+    if (g_menuMasterSwitch && inputKlass) {
+        bool hasTouch = false;
+        if (getTouchCountMI) {
+            void* res = SafeInvoke(getTouchCountMI, nullptr, nullptr);
+            if (res && *(int32_t*)((uint8_t*)res + 16) > 0) hasTouch = true;
+        }
+        if (!hasTouch && getMouseButtonMI) {
+            int32_t btn0 = 0;
+            void* params[1] = { &btn0 };
+            void* res = SafeInvoke(getMouseButtonMI, nullptr, params);
+            if (res && *(bool*)((uint8_t*)res + 16)) hasTouch = true;
+        }
+
+        if (hasTouch && getMousePositionMI) {
+            void* mousePosObj = SafeInvoke(getMousePositionMI, nullptr, nullptr);
+            if (mousePosObj) {
+                Vector3 mPos = *(Vector3*)((uint8_t*)mousePosObj + 16);
+                float sWidth = 0.0f, sHeight = 0.0f;
+                if (getWidthMI && getHeightMI) {
+                    void* widthObj = SafeInvoke(getWidthMI, nullptr, nullptr);
+                    void* heightObj = SafeInvoke(getHeightMI, nullptr, nullptr);
+                    if (widthObj && heightObj) {
+                        float w = (float)*(int32_t*)((uint8_t*)widthObj + 16);
+                        float h = (float)*(int32_t*)((uint8_t*)heightObj + 16);
+                        if (w > 0 && h > 0) { sWidth = w; sHeight = h; }
+                    }
+                }
+                if (sWidth <= 0.0f || sHeight <= 0.0f) {
+                    sWidth = (float)[UIScreen mainScreen].bounds.size.width;
+                    sHeight = (float)[UIScreen mainScreen].bounds.size.height;
+                }
+
+                // If touch is in bottom-left region of the screen (Joystick zone)
+                if (sWidth > 0 && sHeight > 0 && mPos.x > 0 && mPos.y > 0 &&
+                    mPos.x < sWidth * 0.45f && mPos.y < sHeight * 0.55f) {
+                    DisableAllAutoByPlayerMove();
+                    return;
+                }
+            }
+        }
+    }
 
     // Get real-time position
     static void* getTransformMI = nullptr, *getPositionMI = nullptr;
@@ -3336,6 +3318,11 @@ static UISwitch* MakeSwitch(CGFloat x, CGFloat y, bool on) {
     bool isVillageNav = (g_isGoingToVillage || g_isAtVillageForRecipe || g_isReturningToFarm);
 
     if (g_hasCachedTarget && (g_autoDig || isVillageNav || (g_autoAttackMobs && g_cachedTargetIsMob))) {
+        // Defensive check: Target must NOT be (0, 0, 0)
+        if (fabsf(g_cachedTargetPos.x) < 0.1f && fabsf(g_cachedTargetPos.y) < 0.1f) {
+            g_hasCachedTarget = false;
+            return;
+        }
         float dirX = g_cachedTargetPos.x - playerPos.x;
         float dirY = g_cachedTargetPos.y - playerPos.y;
         float dist = sqrtf(dirX*dirX + dirY*dirY);
@@ -4733,7 +4720,6 @@ __attribute__((constructor)) static void entry() {
                                     NSLog(@"[THTweak] Hooked HUDView.RequestAd successfully");
                                 }
                             }
-                            EnsureJoystickHooks();
                             
                             // License Check: Immediately approves if machine UDID or saved key is active on Google Sheets
                             CheckDeviceLicense(^(BOOL success, NSString *keyUsed, NSString *expiry, NSString *errMsg) {
